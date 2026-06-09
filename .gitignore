@@ -1,0 +1,21 @@
+# Environments
+venv/
+env/
+.env
+__pycache__/
+*.pyc
+
+# Dataset and Models (to avoid pushing large files)
+dataset/
+dataset_combined/
+dataset_roboflow/
+model/
+outputs/
+runs/
+val2017/
+*.pt
+
+# Node
+node_modules/
+dist/
+.DS_Store
