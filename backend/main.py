@@ -98,3 +98,5 @@ def test_alert() -> dict:
     from services.alert import reset_cooldown
     reset_cooldown("__test__")
     return result
+
+# End of main configuration

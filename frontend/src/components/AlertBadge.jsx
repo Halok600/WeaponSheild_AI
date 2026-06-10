@@ -1,22 +1,19 @@
-/**
- * AlertBadge – Flashing animated badge shown when weapon is detected.
- * Props:
- *   active   {boolean} – whether a weapon is currently detected
- *   message  {string}  – message to show
- */
+import { IconAlert, IconX } from './Icons'
+
 export default function AlertBadge({ active, message }) {
   if (!active) return null
-
   return (
-    <div className="toast" role="alert" aria-live="assertive">
-      <div className="pulse-dot" />
-      <div>
-        <div style={{ fontWeight: 700, color: 'var(--accent)', fontSize: '0.9rem' }}>
-          ⚠️ WEAPON DETECTED
+    <div className="alert-banner" role="alert" aria-live="assertive">
+      <div className="flex items-center gap-3">
+        <div className="pulse-dot" style={{ background: 'var(--accent)', width: 10, height: 10 }} />
+        <div>
+          <div style={{ fontWeight: 800, fontSize: '0.9rem', letterSpacing: '0.04em' }}>
+            ⚠ WEAPON DETECTED
+          </div>
+          {message && (
+            <div style={{ fontSize: '0.78rem', color: 'hsla(0,0%,100%,0.7)', marginTop: 2 }}>{message}</div>
+          )}
         </div>
-        {message && (
-          <div className="text-sm text-secondary mt-1">{message}</div>
-        )}
       </div>
     </div>
   )
