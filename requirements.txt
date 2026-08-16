@@ -1,0 +1,15 @@
+# ── Core ML ──────────────────────────────────────────
+ultralytics>=8.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# ── Web UI ───────────────────────────────────────────
+gradio>=6.0.0             # Gradio UI + auto REST API
+
+# ── Image processing ─────────────────────────────────
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# ── SMS alerts (optional — only active when secrets are set) ──
+twilio>=8.0.0

@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
-import api from '../api/axiosClient'
+import api, { API_BASE } from '../api/axiosClient'
 import AlertBadge from './AlertBadge'
 import DetectionLog from './DetectionLog'
 import { IconVideo, IconUpload, IconPlay, IconCheck, IconAlert, IconSend, IconSettings, IconZap } from './Icons'
 
 const POLL_MS = 1500
 
-export default function VideoDetection() {
+export default function VideoDetection({ alertEmail }) {
   const [file, setFile]             = useState(null)
   const [jobId, setJobId]           = useState(null)
   const [job, setJob]               = useState(null)
@@ -55,6 +55,7 @@ export default function VideoDetection() {
       form.append('blur_strength', blurStrength)
       form.append('low_res', lowRes)
       form.append('conf_threshold', submittedConf)
+      if (alertEmail) form.append('alert_email', alertEmail)
       const { data } = await api.post('/detect/video', form, {
         onUploadProgress: (e) => { if (e.total) setUploadPct(Math.round((e.loaded / e.total) * 100)) }
       })
@@ -205,7 +206,7 @@ export default function VideoDetection() {
               <div className="section-label mb-3">Processed Output</div>
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
               <video key={job.output_url} controls style={{ width: '100%', borderRadius: 'var(--radius-lg)', background: '#000' }}>
-                <source src={job.output_url} type="video/mp4" />
+                <source src={`${API_BASE}${job.output_url}`} type="video/mp4" />
               </video>
             </div>
           )}
@@ -213,7 +214,7 @@ export default function VideoDetection() {
             {[
               { label: 'Frames Processed', value: job.processed_frames, color: 'var(--cyan)' },
               { label: 'Detections Found', value: detectionLog.length, color: detectionLog.length > 0 ? 'var(--danger)' : 'var(--accent-green)' },
-              { label: 'SMS Alert', value: job.alert?.sent ? '✓ Sent' : '— Not Sent', color: job.alert?.sent ? 'var(--accent-green)' : 'var(--text-muted)' },
+              { label: 'Email Alert', value: job.alert?.sent ? '✓ Sent' : '— Not Sent', color: job.alert?.sent ? 'var(--accent-green)' : 'var(--text-muted)' },
             ].map(s => (
               <div key={s.label} className="kpi-card">
                 <div className="kpi-num" style={{ color: s.color }}>{s.value}</div>

@@ -37,6 +37,10 @@ import sys
 import time
 from pathlib import Path
 
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def _detect_device() -> str:
     """Auto-detect best available compute device."""
@@ -105,6 +109,8 @@ def train(
     batch:      int,
     output_dir: Path,
     device:     str,
+    workers:    int = 4,
+    cache:      bool = False,
 ) -> None:
     try:
         from ultralytics import YOLO
@@ -146,8 +152,8 @@ def train(
         patience=20,        # Early stopping: stop if no improvement for 20 epochs
         cos_lr=True,        # Cosine LR schedule for smoother convergence
         augment=True,       # Enable online augmentation
-        cache=False,        # Set to True if you have enough RAM (faster training)
-        workers=4,
+        cache=cache,        # Set to True if you have enough RAM (faster training)
+        workers=workers,
         exist_ok=True,      # Overwrite previous run if same name
     )
     elapsed = time.time() - start
@@ -205,6 +211,8 @@ if __name__ == "__main__":
         default="",
         help="Device: '' (auto-detect), 'cpu', '0' (GPU 0), '0,1' (multi-GPU)",
     )
+    parser.add_argument("--workers", type=int, default=4, help="DataLoader worker processes (lower this if you hit host RAM errors)")
+    parser.add_argument("--cache", action="store_true", help="Cache images in RAM for faster training (needs plenty of free RAM)")
     args = parser.parse_args()
     train(
         data_yaml=args.data,
@@ -213,5 +221,7 @@ if __name__ == "__main__":
         imgsz=args.imgsz,
         batch=args.batch,
         output_dir=Path(args.output),
+        workers=args.workers,
+        cache=args.cache,
         device=args.device,
     )

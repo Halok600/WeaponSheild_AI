@@ -41,6 +41,10 @@ import shutil
 import sys
 from pathlib import Path
 
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ── Class remapping ───────────────────────────────────────────────────────────
 # Maps raw class-name keywords (lower-case) → our consolidated class ID.
 # Any class not matched here is DROPPED from labels (becomes a background region).
@@ -48,8 +52,9 @@ from pathlib import Path
 # Add more keywords if the dataset uses regional names you want to include.
 REMAP_RULES: list[tuple[int, list[str]]] = [
     # (target_id, [keyword fragments that match raw class names])
-    (0, ["pistol", "handgun", "hand gun", "heavy gun", "guns", "gun"]),
-    (1, ["rifle", "shotgun", "shotgun", "long gun", "larga", "revolver", "carbine", "smg"]),
+    (0, ["pistol", "handgun", "hand gun", "guns", "gun"]),
+    (1, ["rifle", "shotgun", "long gun", "larga", "revolver", "carbine", "smg",
+         "heavy gun", "heavy weapon", "heavy-weapon", "heavyweapon", "machine gun"]),
     (2, ["knife", "knive", "blade", "pisau", "dagger", "machete", "cleaver", "stabbing"]),
 ]
 
@@ -57,9 +62,12 @@ REMAP_RULES: list[tuple[int, list[str]]] = [
 FINAL_CLASS_NAMES = ["Pistol", "Rifle", "Knife"]
 
 # ── Dataset to download ───────────────────────────────────────────────────────
-ROBOFLOW_WORKSPACE = "yolov7test"
-ROBOFLOW_PROJECT   = "weapon-detection"
-ROBOFLOW_VERSION   = 5          # latest stable version with 9,700 images
+# NOTE: Roboflow renamed this project's slugs at some point after this script was
+# written (yolov7test → yolov7test-u13vc, weapon-detection → weapon-detection-m7qso).
+# Same dataset (9,672 images, 28 classes) — https://universe.roboflow.com/yolov7test-u13vc/weapon-detection-m7qso
+ROBOFLOW_WORKSPACE = "yolov7test-u13vc"
+ROBOFLOW_PROJECT   = "weapon-detection-m7qso"
+ROBOFLOW_VERSION   = 16         # largest version: 16,634 images, 21 remapped classes
 ROBOFLOW_FORMAT    = "yolov8"
 
 
@@ -124,9 +132,9 @@ def _write_data_yaml(output_dir: Path) -> Path:
 # Dataset: Roboflow weapon-detection (yolov7test), remapped to 3 classes
 
 path:  {abs_path}
-train: images/train
-val:   images/valid
-test:  images/test
+train: train/images
+val:   valid/images
+test:  test/images
 
 nc: 3
 names: ['Pistol', 'Rifle', 'Knife']
@@ -149,8 +157,8 @@ def _print_summary(output_dir: Path, class_counts: dict[str, list[int]]) -> None
     print(f"  {'Split':<8} {'Images':>8} {'Labels':>8} {'Pistol':>8} {'Rifle':>8} {'Knife':>8}")
     print("  " + "-" * 54)
     for split in splits:
-        imgs   = _count(output_dir / "images" / split, "jpg") + _count(output_dir / "images" / split, "png")
-        labels = _count(output_dir / "labels" / split, "txt")
+        imgs   = _count(output_dir / split / "images", "jpg") + _count(output_dir / split / "images", "png")
+        labels = _count(output_dir / split / "labels", "txt")
         counts = class_counts.get(split, [0, 0, 0])
         print(f"  {split:<8} {imgs:>8} {labels:>8} {counts[0]:>8} {counts[1]:>8} {counts[2]:>8}")
     print("═" * 56 + "\n")
@@ -181,7 +189,7 @@ def _get_user_workspace(rf) -> str:
         return ""
 
 
-def download_and_remap(api_key: str, output_dir: Path, workspace_override: str = "") -> None:
+def download_and_remap(api_key: str, output_dir: Path, workspace_override: str = "", project_override: str = "") -> None:
     try:
         from roboflow import Roboflow
     except ImportError:
@@ -191,21 +199,22 @@ def download_and_remap(api_key: str, output_dir: Path, workspace_override: str =
 
     rf = Roboflow(api_key=api_key)
 
-    # ── Resolve which workspace to download from ──────────────────────────────
+    # ── Resolve which workspace/project to download from ──────────────────────
     target_workspace = workspace_override.strip() or ROBOFLOW_WORKSPACE
+    target_project = project_override.strip() or ROBOFLOW_PROJECT
 
     print("\n" + "═" * 56)
     print("  🔫  WeaponShield AI — Roboflow Dataset Download")
     print("═" * 56)
     print(f"  Workspace : {target_workspace}")
-    print(f"  Project   : {ROBOFLOW_PROJECT}")
+    print(f"  Project   : {target_project}")
     print(f"  Version   : {ROBOFLOW_VERSION}")
     print(f"  Output    : {output_dir.resolve()}")
     print("═" * 56 + "\n")
 
     # ── Try to download; give clear fork instructions if access denied ────────
     try:
-        project = rf.workspace(target_workspace).project(ROBOFLOW_PROJECT)
+        project = rf.workspace(target_workspace).project(target_project)
         version = project.version(ROBOFLOW_VERSION)
     except Exception as exc:
         err_str = str(exc)
@@ -236,7 +245,7 @@ def download_and_remap(api_key: str, output_dir: Path, workspace_override: str =
         sys.exit(1)
 
     # Download to a temp location, then move to output_dir
-    tmp_dir = output_dir.parent / f"_rf_tmp_{ROBOFLOW_PROJECT}"
+    tmp_dir = output_dir.parent / f"_rf_tmp_{target_project}"
     print(f"[DL]  Downloading dataset to temporary folder: {tmp_dir} ...")
     dataset = version.download(ROBOFLOW_FORMAT, location=str(tmp_dir), overwrite=True)
     dl_path = Path(dataset.location)
@@ -285,7 +294,7 @@ def download_and_remap(api_key: str, output_dir: Path, workspace_override: str =
     class_counts: dict[str, list[int]] = {}
 
     for split in splits:
-        label_dir = output_dir / "labels" / split
+        label_dir = output_dir / split / "labels"
         if not label_dir.exists():
             continue
 
@@ -368,6 +377,11 @@ if __name__ == "__main__":
         help="Your Roboflow workspace slug (required after forking the dataset). "
              "Find it in your dashboard URL: https://app.roboflow.com/YOUR-SLUG",
     )
+    parser.add_argument(
+        "--project",
+        default="",
+        help="Override the Roboflow project slug (default: the built-in weapon-detection project).",
+    )
     args = parser.parse_args()
 
     api_key = args.api_key.strip()
@@ -384,4 +398,5 @@ if __name__ == "__main__":
         api_key=api_key,
         output_dir=Path(args.output),
         workspace_override=args.workspace,
+        project_override=args.project,
     )

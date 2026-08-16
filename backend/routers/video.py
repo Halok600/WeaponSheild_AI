@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 
 from config import CONFIDENCE_THRESHOLD, FRAME_SKIP, OUTPUTS_DIR, STOP_ON_DETECTION
 from model.detector import Detection, detector
+from services.alert import send_weapon_alert
 from services.frame_buffer import FrameBuffer
 from services.processing import (
     draw_status_overlay,
@@ -72,6 +73,7 @@ def _process_video(
     blur_strength: int,
     low_res: bool,
     conf_threshold: float = CONFIDENCE_THRESHOLD,
+    alert_email: str | None = None,
 ) -> None:
     """
     Frame-by-frame video processing running in a thread pool.
@@ -184,9 +186,16 @@ def _process_video(
                         }
                     )
 
-            # ── No SMS alert for recorded video (webcam-only) ─────────────────
+            # ── Fire email alert on first confirmation ─────────────────────────
             if confirmed and not alert_sent:
-                job["alert"] = {"sent": False, "reason": "not_applicable_for_video", "sid": None}
+                top_label = smoothed_dets[0].label if smoothed_dets else "Weapon"
+                job["alert"] = send_weapon_alert(
+                    timestamp=timestamp_str,
+                    confidence=buf.get_avg_confidence(),
+                    to_email=alert_email,
+                    session_id=job_id,
+                    label=top_label,
+                )
                 alert_sent = True
 
             # ── Stop-on-detection ─────────────────────────────────────────────
@@ -226,7 +235,7 @@ def _process_video(
     job["processed_frames"]     = frame_idx
 
     if not alert_sent:
-        job["alert"] = {"sent": False, "reason": "no_confirmed_detection", "sid": None}
+        job["alert"] = {"sent": False, "reason": "no_confirmed_detection", "id": None}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -240,6 +249,7 @@ async def upload_video(
     blur_strength: int = Form(0),
     low_res: bool = Form(False),
     conf_threshold: float = Form(CONFIDENCE_THRESHOLD),
+    alert_email: str | None = Form(None),
 ) -> JSONResponse:
     """
     Upload a video file and start asynchronous weapon detection.
@@ -252,6 +262,7 @@ async def upload_video(
       add_noise         – simulate CCTV Gaussian noise
       blur_strength     – simulate CCTV blur (kernel size)
       low_res           – simulate low-resolution CCTV feed
+      alert_email       – email address to notify if a weapon is confirmed
     """
     allowed_ext = {".mp4", ".avi", ".mov", ".mkv"}
     suffix = Path(file.filename or "").suffix.lower()
@@ -293,6 +304,7 @@ async def upload_video(
         blur_strength,
         low_res,
         conf_threshold,
+        alert_email,
     )
 
     return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)

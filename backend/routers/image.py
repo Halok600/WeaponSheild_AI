@@ -5,33 +5,42 @@ Accepts an uploaded image, runs YOLO detection, returns:
   • annotated image URL
   • per-detection label, confidence score, bounding box
   • weapon_detected flag
-  • alert dispatch result (Twilio)
+  • alert dispatch result (email via Resend)
 
 Alert fires when:
   • Any detection passes the confidence threshold AND
-  • Either WEAPON_CLASS_IDS is configured OR model is fine-tuned (all classes = weapons)
+  • The caller supplied a valid alert_email
 """
 from __future__ import annotations
 
+import time
 import uuid
 from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from config import IMAGE_CONFIDENCE_THRESHOLD, OUTPUTS_DIR, WEAPON_CLASS_IDS
+from config import IMAGE_CONFIDENCE_THRESHOLD, OUTPUTS_DIR
 from model.detector import Detection, detector
+from services.alert import send_weapon_alert
 from services.processing import preprocess_frame
 
 router = APIRouter(prefix="/detect", tags=["Image Detection"])
 
 
 @router.post("/image")
-async def detect_image(file: UploadFile = File(...)) -> JSONResponse:
+async def detect_image(
+    file: UploadFile = File(...),
+    alert_email: str | None = Form(None),
+) -> JSONResponse:
     """
     Upload an image (jpeg/png/bmp/webp) and receive weapon detections.
+
+    Args:
+        file:        Image file to scan.
+        alert_email: Optional email address to notify if a weapon is found.
 
     Returns:
         job_id:          Unique identifier for this request.
@@ -40,7 +49,7 @@ async def detect_image(file: UploadFile = File(...)) -> JSONResponse:
         detected_classes: Distinct class names found.
         max_confidence:  Highest confidence score in this image.
         weapon_detected: True if detections pass the weapon filter.
-        alert:           Twilio alert dispatch result.
+        alert:           Email alert dispatch result.
     """
     # ── Validate ─────────────────────────────────────────────────────────────
     allowed = {"image/jpeg", "image/png", "image/bmp", "image/webp"}
@@ -81,8 +90,16 @@ async def detect_image(file: UploadFile = File(...)) -> JSONResponse:
     cv2.imwrite(str(out_path), annotated, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
     # ── Alert ─────────────────────────────────────────────────────────────────
-    # SMS alerts are only sent during live webcam detection (not image uploads).
-    alert_result = {"sent": False, "reason": "not_applicable_for_image", "sid": None}
+    alert_result = {"sent": False, "reason": "no_weapon_detected", "id": None}
+    if weapon_detected:
+        top = max(detections, key=lambda d: d.confidence)
+        alert_result = send_weapon_alert(
+            timestamp=time.strftime("%H:%M:%S"),
+            confidence=top.confidence,
+            to_email=alert_email,
+            session_id=job_id,
+            label=top.label,
+        )
 
     return JSONResponse(
         {

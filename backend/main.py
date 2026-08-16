@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config import OUTPUTS_DIR, TWILIO_ENABLED, TWILIO_FROM_NUMBER, TWILIO_TO_NUMBER
+from config import CORS_ORIGINS, OUTPUTS_DIR, RESEND_ENABLED, RESEND_FROM_EMAIL
 from model.detector import detector
 from routers import image as image_router
 from routers import video as video_router
@@ -50,11 +50,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS (allow all origins during development) ───────────────────────────────
+# ── CORS ────────────────────────────────────────────────────────────────────
+# With specific origins configured (production), credentials are allowed.
+# With no origins configured (local dev), fall back to wildcard — browsers
+# reject wildcard + credentials together, so credentials are disabled then.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS or ["*"],
+    allow_credentials=bool(CORS_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -71,27 +74,27 @@ app.include_router(webcam_router.router)
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health", tags=["System"])
 def health() -> dict:
-    from_ = TWILIO_FROM_NUMBER.split("#")[0].strip()
-    to_   = TWILIO_TO_NUMBER.split("#")[0].strip()
     return {
         "status":         "ok",
         "model_loaded":   detector._loaded,
         "model_path":     str(detector.model.ckpt_path) if detector._loaded else None,
-        "twilio_enabled": TWILIO_ENABLED,
-        "twilio_from":    from_ if TWILIO_ENABLED else None,
-        "twilio_to":      to_   if TWILIO_ENABLED else None,
+        "model_classes":  list(detector.class_names.values()) if detector._loaded else None,
+        "resend_enabled": RESEND_ENABLED,
+        "resend_from":    RESEND_FROM_EMAIL if RESEND_ENABLED else None,
     }
 
 
-# ── Manual SMS test ────────────────────────────────────────────────────────────
+# ── Manual email alert test ──────────────────────────────────────────────────
 @app.post("/test-alert", tags=["System"])
-def test_alert() -> dict:
+def test_alert(email: str) -> dict:
     """
-    Send a test SMS to verify Twilio configuration.
-    Visit http://localhost:8000/docs and click POST /test-alert → Execute.
+    Send a test email to verify Resend configuration.
+    Visit http://localhost:8000/docs and click POST /test-alert → Try it out.
     """
     result = send_alert(
-        message="🔔 WeaponShield AI – Test alert. Twilio is configured correctly!",
+        subject="WeaponShield AI - Test Alert",
+        html="<p>&#128276; WeaponShield AI &ndash; Test alert. Resend is configured correctly!</p>",
+        to_email=email,
         session_id="__test__",
     )
     # Reset cooldown so it can be retried immediately

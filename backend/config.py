@@ -12,21 +12,10 @@ from dotenv import load_dotenv
 # Load .env located next to this file
 load_dotenv(Path(__file__).parent / ".env")
 
-# ── Twilio ────────────────────────────────────────────────────────────────────
-TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN: str  = os.getenv("TWILIO_AUTH_TOKEN", "")
-TWILIO_MESSAGING_SERVICE_SID: str = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "")
-TWILIO_TO_NUMBER: str   = os.getenv("TWILIO_TO_NUMBER", "")
-
-# Keep FROM_NUMBER as empty fallback (legacy / unused)
-TWILIO_FROM_NUMBER: str = os.getenv("TWILIO_FROM_NUMBER", "")
-
-TWILIO_ENABLED: bool = bool(
-    TWILIO_ACCOUNT_SID
-    and TWILIO_AUTH_TOKEN
-    and TWILIO_MESSAGING_SERVICE_SID
-    and TWILIO_TO_NUMBER
-)
+# ── Resend (email alerts) ────────────────────────────────────────────────────
+RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM_EMAIL: str = os.getenv("RESEND_FROM_EMAIL", "WeaponShield AI <onboarding@resend.dev>")
+RESEND_ENABLED: bool = bool(RESEND_API_KEY)
 
 # ── Model — fallback chain: best.pt → yolov8n.pt ─────────────────────────────
 BASE_DIR: Path = Path(__file__).parent
@@ -99,3 +88,10 @@ OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Alert rate-limit: seconds between successive alerts for the same session
 ALERT_COOLDOWN_SECONDS: int = 60
+
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# Comma-separated list of allowed frontend origins in production, e.g.:
+#   CORS_ORIGINS=https://weaponshield.vercel.app,https://weaponshield-preview.vercel.app
+# Leave empty for local dev — falls back to allowing all origins (no credentials).
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+CORS_ORIGINS: list[str] = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]

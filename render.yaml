@@ -1,0 +1,44 @@
+# Render Blueprint for the WeaponShield AI backend.
+# Deploy: https://dashboard.render.com/blueprints -> New Blueprint Instance -> pick this repo.
+#
+# NOTE: Render's free/starter instances have limited RAM (512MB-1GB). YOLOv8 + torch
+# (CPU inference, no GPU on Render) is memory-hungry — if the service crashes or the
+# model fails to load, upgrade to a plan with more RAM.
+services:
+  - type: web
+    name: weaponshield-backend
+    runtime: python
+    plan: starter
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.10.11"
+      # Set this in the Render dashboard — do not commit real keys.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        value: "WeaponShield AI <onboarding@resend.dev>"
+      - key: MODEL_PATH
+        value: "../model/best.pt"
+      - key: WEAPON_CLASS_IDS
+        value: "0,1,2"
+      - key: CONFIDENCE_THRESHOLD
+        value: "0.01"
+      - key: IMAGE_CONFIDENCE_THRESHOLD
+        value: "0.60"
+      - key: WEBCAM_CONFIDENCE_THRESHOLD
+        value: "0.70"
+      - key: FRAME_WINDOW
+        value: "10"
+      - key: DETECTION_COUNT_THRESHOLD
+        value: "3"
+      - key: FRAME_SKIP
+        value: "0"
+      - key: INFERENCE_WIDTH
+        value: "640"
+      # Set this to your deployed Vercel URL(s), comma-separated, once known —
+      # e.g. https://weaponshield.vercel.app
+      - key: CORS_ORIGINS
+        sync: false

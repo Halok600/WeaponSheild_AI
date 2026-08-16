@@ -1,6 +1,7 @@
 # Environments
 venv/
 env/
+.venv/
 .env
 __pycache__/
 *.pyc
@@ -9,11 +10,20 @@ __pycache__/
 dataset/
 dataset_combined/
 dataset_roboflow/
-model/
+dataset_roboflow_edi/
+dataset_multiclass/
 outputs/
 runs/
 val2017/
 *.pt
+training.log
+
+# Root-level model/ (weights dir) is ignored except the final deployed weights —
+# Render needs best.pt in the repo since it has no separate model-storage step.
+# Anchored with a leading slash so this does NOT match backend/model/ (the
+# actual FastAPI detector Python package, which must stay tracked).
+/model/*
+!/model/best.pt
 
 # Node
 node_modules/

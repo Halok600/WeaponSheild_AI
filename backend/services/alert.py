@@ -1,51 +1,36 @@
 """
-alert.py – Twilio SMS alert dispatcher with per-session rate-limiting and
+alert.py – Resend email alert dispatcher with per-session rate-limiting and
            event-deduplication.
 
 Features:
-  • send_weapon_alert()  – convenience wrapper with correct CCTV message format
-  • send_alert()         – low-level dispatcher (message, session_id)
+  • send_weapon_alert()  – convenience wrapper with correct alert email format
+  • send_alert()         – low-level dispatcher (message, session_id, to_email)
   • reset_cooldown()     – reset per-session timer (call on new upload)
   • Cooldown guard       – prevents flooding for the same session
   • Event-hash dedup     – same timestamp+confidence won't fire twice
-  • Graceful degradation – logs to console if Twilio is unconfigured/unavailable
+  • Graceful degradation – logs to console if Resend is unconfigured or no
+                            recipient email was given
 
-If Twilio credentials are missing the alert is silently logged to console
-so the rest of the application continues to work without configuration.
-
-COMMON FAILURE REASONS:
-  • TWILIO_FROM_NUMBER must be a Twilio-provisioned number (not a personal number).
-  • Trial accounts can only send to verified numbers and must use a Twilio number.
-  • Inline comments in .env values (e.g. +1234 # comment) are stripped automatically.
+Unlike the old Twilio integration (fixed phone number from .env), the
+recipient email is supplied per-request by the user via the frontend, since
+each visitor can ask to be alerted at their own address.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from threading import Lock
 
+import httpx
+
+from config import ALERT_COOLDOWN_SECONDS, RESEND_API_KEY, RESEND_ENABLED, RESEND_FROM_EMAIL
+
 logger = logging.getLogger(__name__)
 
-# Lazy import so the app boots even if twilio isn't installed
-try:
-    from twilio.rest import Client as TwilioClient  # type: ignore
-    _twilio_available = True
-except ImportError:
-    _twilio_available = False
-
-from config import (
-    ALERT_COOLDOWN_SECONDS,
-    TWILIO_ACCOUNT_SID,
-    TWILIO_AUTH_TOKEN,
-    TWILIO_ENABLED,
-    TWILIO_MESSAGING_SERVICE_SID,
-    TWILIO_TO_NUMBER,
-)
-
-# Strip inline comments from the TO number
-_TO = TWILIO_TO_NUMBER.split("#")[0].strip()
-_MSG_SID = TWILIO_MESSAGING_SERVICE_SID.strip()
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_RESEND_URL = "https://api.resend.com/emails"
 
 # Per-session last-alert timestamps  {session_id: epoch_float}
 _last_alert: dict[str, float] = {}
@@ -53,20 +38,9 @@ _last_alert: dict[str, float] = {}
 _alerted_events: set[str] = set()
 _lock = Lock()
 
-# Twilio client (initialised once if credentials present)
-_client: TwilioClient | None = None
-if TWILIO_ENABLED and _twilio_available:
-    try:
-        _client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        logger.info("Twilio client initialised successfully.")
-        logger.info("Twilio MessagingServiceSid=%s  TO=%s", _MSG_SID, _TO)
-    except Exception as exc:  # pragma: no cover
-        logger.warning("Twilio client init failed: %s", exc)
-elif not TWILIO_ENABLED:
-    logger.warning(
-        "Twilio NOT configured. Check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / "
-        "TWILIO_MESSAGING_SERVICE_SID / TWILIO_TO_NUMBER in backend/.env"
-    )
+
+def _is_valid_email(email: str | None) -> bool:
+    return bool(email and _EMAIL_RE.match(email.strip()))
 
 
 # ── Convenience weapon-alert wrapper ─────────────────────────────────────────
@@ -74,36 +48,49 @@ def send_weapon_alert(
     *,
     timestamp: str,
     confidence: float,
+    to_email: str | None,
     session_id: str = "global",
     label: str = "Weapon",
 ) -> dict:
     """
-    Fire a Twilio SMS alert in the standard CCTV format:
-        ⚠️ Weapon detected at 00:01:23 with confidence 87%
+    Fire a Resend email alert:
+        Subject: Weapon Alert - Pistol detected
+        Body:    Pistol detected at 00:01:23 with confidence 87%
 
     Args:
         timestamp:  Human-readable timestamp string e.g. '00:01:23'.
         confidence: Detection confidence 0.0–1.0.
+        to_email:   Recipient email address supplied by the user. If missing
+                    or invalid, the alert is skipped (no email configured).
         session_id: Per-session rate-limit key.
         label:      Detected weapon class name.
 
     Returns:
-        dict with keys: sent, reason, sid
+        dict with keys: sent, reason, id
     """
     conf_pct = int(round(confidence * 100))
-    message = (
-        f"⚠️ {label} detected at {timestamp} with confidence {conf_pct}% "
-        f"— WeaponShield AI Surveillance System"
-    )
+    subject = f"Weapon Alert - {label} detected"
+    html = f"""
+        <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 480px;">
+          <h2 style="color:#c62828; margin-bottom: 4px;">&#9888; Weapon Detected</h2>
+          <p style="font-size: 15px; color:#333;">
+            <strong>{label}</strong> was detected at <strong>{timestamp}</strong>
+            with <strong>{conf_pct}%</strong> confidence.
+          </p>
+          <p style="font-size: 13px; color:#777; margin-top: 24px;">
+            &mdash; WeaponShield AI Surveillance System
+          </p>
+        </div>
+    """
     # Build a deduplication hash: same label + timestamp is one event
     event_key = hashlib.md5(f"{session_id}|{label}|{timestamp}".encode()).hexdigest()
 
     with _lock:
         if event_key in _alerted_events:
             logger.debug("Duplicate event skipped: %s", event_key)
-            return {"sent": False, "reason": "duplicate_event", "sid": None}
+            return {"sent": False, "reason": "duplicate_event", "id": None}
 
-    result = send_alert(message=message, session_id=session_id)
+    result = send_alert(subject=subject, html=html, session_id=session_id, to_email=to_email)
 
     if result["sent"]:
         with _lock:
@@ -115,21 +102,30 @@ def send_weapon_alert(
 # ── Core dispatcher ───────────────────────────────────────────────────────────
 def send_alert(
     *,
-    message: str,
+    subject: str,
+    html: str,
+    to_email: str | None,
     session_id: str = "global",
 ) -> dict:
     """
-    Send an SMS alert via Twilio if:
-      1. Twilio is configured and available.
-      2. Cooldown period has elapsed for the given session.
+    Send an email alert via Resend if:
+      1. Resend is configured.
+      2. A valid recipient email was supplied.
+      3. Cooldown period has elapsed for the given session.
 
     Args:
-        message:    Alert body, e.g. "⚠️ Weapon detected at 00:01:23 with confidence 87%".
-        session_id: Unique key for rate-limiting (e.g. job_id or 'webcam').
+        subject:    Email subject line.
+        html:       Email HTML body.
+        to_email:   Recipient email address.
+        session_id: Unique key for rate-limiting (e.g. job_id or webcam session id).
 
     Returns:
-        dict with keys: sent (bool), reason (str), sid (str | None)
+        dict with keys: sent (bool), reason (str), id (str | None)
     """
+    if not _is_valid_email(to_email):
+        logger.debug("[ALERT] No valid recipient email provided — skipping.")
+        return {"sent": False, "reason": "no_email_provided", "id": None}
+
     now = time.time()
 
     with _lock:
@@ -137,40 +133,35 @@ def send_alert(
         if now - last < ALERT_COOLDOWN_SECONDS:
             remaining = int(ALERT_COOLDOWN_SECONDS - (now - last))
             logger.debug("Alert throttled for session %s (%ds remaining).", session_id, remaining)
-            return {"sent": False, "reason": f"cooldown ({remaining}s left)", "sid": None}
+            return {"sent": False, "reason": f"cooldown ({remaining}s left)", "id": None}
 
         _last_alert[session_id] = now
 
-    # Attempt Twilio dispatch
-    if not TWILIO_ENABLED:
-        logger.warning("[ALERT – Twilio not configured] %s", message)
-        return {"sent": False, "reason": "twilio_not_configured", "sid": None}
-
-    if not _twilio_available:
-        logger.warning("[ALERT – twilio package missing] %s", message)
-        return {"sent": False, "reason": "twilio_package_missing", "sid": None}
-
-    if _client is None:
-        logger.warning("[ALERT – client init failed] %s", message)
-        return {"sent": False, "reason": "client_init_failed", "sid": None}
+    if not RESEND_ENABLED:
+        logger.warning("[ALERT – Resend not configured] %s -> %s", subject, to_email)
+        return {"sent": False, "reason": "resend_not_configured", "id": None}
 
     try:
-        logger.info("[TWILIO] Sending SMS via MessagingService=%s to %s", _MSG_SID, _TO)
-        msg = _client.messages.create(
-            body=message,
-            messaging_service_sid=_MSG_SID,
-            to=_TO,
+        logger.info("[RESEND] Sending email to %s", to_email)
+        resp = httpx.post(
+            _RESEND_URL,
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            json={
+                "from": RESEND_FROM_EMAIL,
+                "to": [to_email.strip()],
+                "subject": subject,
+                "html": html,
+            },
+            timeout=10.0,
         )
-        logger.info("[TWILIO] SMS sent. SID=%s status=%s", msg.sid, msg.status)
-        return {"sent": True, "reason": "ok", "sid": msg.sid}
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info("[RESEND] Email sent. id=%s", data.get("id"))
+        return {"sent": True, "reason": "ok", "id": data.get("id")}
     except Exception as exc:
         err_str = str(exc)
-        logger.error(
-            "[TWILIO] Send FAILED: %s\n"
-            "  MessagingServiceSid=%s  TO=%s",
-            err_str, _MSG_SID, _TO,
-        )
-        return {"sent": False, "reason": err_str, "sid": None}
+        logger.error("[RESEND] Send FAILED: %s  to=%s", err_str, to_email)
+        return {"sent": False, "reason": err_str, "id": None}
 
 
 def reset_cooldown(session_id: str = "global") -> None:

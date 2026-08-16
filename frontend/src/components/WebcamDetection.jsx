@@ -3,22 +3,43 @@ import api from '../api/axiosClient'
 import AlertBadge from './AlertBadge'
 import { IconCamera, IconPlay, IconStop, IconCheck, IconAlert, IconInfo, IconEye, IconActivity } from './Icons'
 
-const STREAM_URL = '/detect/webcam/stream'
-const STATUS_URL = '/detect/webcam/status'
-const POLL_MS    = 600
+const CAPTURE_MS   = 600   // interval between frames sent to the backend
+const CAPTURE_WIDTH = 640  // frames are downscaled to this before upload
 
-export default function WebcamDetection() {
+export default function WebcamDetection({ alertEmail }) {
   const [active, setActive]             = useState(false)
-  const [status, setStatus]             = useState(null)
   const [error, setError]               = useState(null)
-  const [cameraIdx, setCameraIdx]       = useState(0)
+  const [devices, setDevices]           = useState([])
+  const [deviceId, setDeviceId]         = useState('')
+  const [detections, setDetections]     = useState([])
+  const [threatConfirmed, setThreatConfirmed] = useState(false)
+  const [avgConf, setAvgConf]           = useState(0)
+  const [posFrames, setPosFrames]       = useState(0)
+  const [winSize, setWinSize]           = useState(0)
+  const [reqRate, setReqRate]           = useState(0)
   const [alertVisible, setAlertVisible] = useState(false)
   const [alertDismissed, setAlertDismissed] = useState(false)
   const [alertInfo, setAlertInfo]       = useState(null)
-  const pollRef    = useRef(null)
-  const imgRef     = useRef()
-  const audioCtxRef = useRef(null)
-  const prevConfirmedRef = useRef(false)
+
+  const videoRef        = useRef()
+  const overlayRef       = useRef()
+  const captureCanvasRef = useRef()
+  const streamRef        = useRef(null)
+  const loopRef          = useRef(null)
+  const sessionIdRef      = useRef(null)
+  const inFlightRef       = useRef(false)
+  const audioCtxRef       = useRef(null)
+  const prevConfirmedRef  = useRef(false)
+
+  // ── Enumerate available cameras (labels populate after permission granted) ──
+  useEffect(() => {
+    if (!navigator.mediaDevices?.enumerateDevices) return
+    navigator.mediaDevices.enumerateDevices().then(list => {
+      const cams = list.filter(d => d.kind === 'videoinput')
+      setDevices(cams)
+      if (cams.length && !deviceId) setDeviceId(cams[0].deviceId)
+    }).catch(() => {})
+  }, [])
 
   const playAlarm = useCallback(() => {
     try {
@@ -36,35 +57,128 @@ export default function WebcamDetection() {
     } catch { /* audio blocked */ }
   }, [])
 
-  useEffect(() => {
-    if (!active) { clearInterval(pollRef.current); return }
-    pollRef.current = setInterval(async () => {
+  const drawOverlay = useCallback((dets, frameW, frameH) => {
+    const canvas = overlayRef.current
+    const video  = videoRef.current
+    if (!canvas || !video) return
+    const dw = video.clientWidth, dh = video.clientHeight
+    canvas.width = dw
+    canvas.height = dh
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, dw, dh)
+    if (!frameW || !frameH) return
+    const sx = dw / frameW, sy = dh / frameH
+    dets.forEach(d => {
+      const [x1, y1, x2, y2] = d.bbox
+      const rx = x1 * sx, ry = y1 * sy, rw = (x2 - x1) * sx, rh = (y2 - y1) * sy
+      ctx.strokeStyle = '#e63946'
+      ctx.lineWidth = 2
+      ctx.strokeRect(rx, ry, rw, rh)
+      const text = `${d.label} ${(d.confidence * 100).toFixed(0)}%`
+      ctx.font = '600 13px sans-serif'
+      const tw = ctx.measureText(text).width
+      const ty = Math.max(ry - 18, 0)
+      ctx.fillStyle = '#e63946'
+      ctx.fillRect(rx, ty, tw + 8, 18)
+      ctx.fillStyle = '#fff'
+      ctx.fillText(text, rx + 4, ty + 13)
+    })
+  }, [])
+
+  const sendFrame = useCallback(async () => {
+    const video = videoRef.current
+    if (!video || video.readyState < 2 || inFlightRef.current) return
+    inFlightRef.current = true
+    try {
+      const vw = video.videoWidth, vh = video.videoHeight
+      if (!vw || !vh) return
+      const scale = Math.min(1, CAPTURE_WIDTH / vw)
+      const cw = Math.round(vw * scale), ch = Math.round(vh * scale)
+      const canvas = captureCanvasRef.current
+      canvas.width = cw
+      canvas.height = ch
+      canvas.getContext('2d').drawImage(video, 0, 0, cw, ch)
+
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.7))
+      if (!blob) return
+
+      const form = new FormData()
+      form.append('file', blob, 'frame.jpg')
+      form.append('session_id', sessionIdRef.current)
+      if (alertEmail) form.append('alert_email', alertEmail)
+
+      const t0 = performance.now()
+      const { data } = await api.post('/detect/webcam/frame', form)
+      setReqRate(Math.round(1000 / Math.max(performance.now() - t0, 1) * 10) / 10)
+
+      setDetections(data.detections || [])
+      setThreatConfirmed(data.threat_confirmed)
+      setAvgConf(data.avg_confidence || 0)
+      setPosFrames(data.positive_frames || 0)
+      setWinSize(data.window_size || 0)
+      drawOverlay(data.detections || [], data.frame_width, data.frame_height)
+
+      if (data.threat_confirmed && !prevConfirmedRef.current && !alertDismissed) {
+        const top = data.detections?.[0]
+        setAlertInfo({ label: top?.label ?? 'Weapon', confidence: top?.confidence ?? data.avg_confidence ?? 0, time: new Date().toLocaleTimeString() })
+        setAlertVisible(true); playAlarm()
+      }
+      prevConfirmedRef.current = data.threat_confirmed
+      if (!data.threat_confirmed && (data.positive_frames ?? 0) === 0) { setAlertDismissed(false) }
+    } catch {
+      /* transient network error — next tick will retry */
+    } finally {
+      inFlightRef.current = false
+    }
+  }, [alertEmail, alertDismissed, playAlarm, drawOverlay])
+
+  const handleStart = async () => {
+    setError(null)
+    setAlertVisible(false); setAlertDismissed(false); prevConfirmedRef.current = false
+    setDetections([]); setThreatConfirmed(false); setAvgConf(0); setPosFrames(0); setWinSize(0)
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('This browser does not support camera access (getUserMedia unavailable).')
+      return
+    }
+    try {
+      sessionIdRef.current = crypto.randomUUID()
+      const constraints = { video: deviceId ? { deviceId: { exact: deviceId } } : true }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      streamRef.current = stream
+      videoRef.current.srcObject = stream
+      await videoRef.current.play()
+      setActive(true)
+      loopRef.current = setInterval(sendFrame, CAPTURE_MS)
+    } catch (err) {
+      setError(err?.message || 'Could not access the camera. Check browser permissions.')
+    }
+  }
+
+  const handleStop = async () => {
+    clearInterval(loopRef.current)
+    loopRef.current = null
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+    const canvas = overlayRef.current
+    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+    setActive(false); setAlertVisible(false)
+    if (sessionIdRef.current) {
       try {
-        const { data } = await api.get(STATUS_URL)
-        setStatus(data)
-        const confirmed = data.threat_confirmed || data.weapon_detected
-        if (confirmed && !prevConfirmedRef.current && !alertDismissed) {
-          const top = data.detections?.[0]
-          setAlertInfo({ label: top?.label ?? 'Weapon', confidence: top?.confidence ?? data.avg_confidence ?? 0, time: new Date().toLocaleTimeString() })
-          setAlertVisible(true); playAlarm()
-        }
-        prevConfirmedRef.current = confirmed
-        if (!confirmed && (data.positive_frames ?? 0) === 0) { prevConfirmedRef.current = false; setAlertDismissed(false) }
+        const form = new FormData()
+        form.append('session_id', sessionIdRef.current)
+        await api.post('/detect/webcam/stop', form)
       } catch { /* ignore */ }
-    }, POLL_MS)
-    return () => clearInterval(pollRef.current)
-  }, [active, alertDismissed, playAlarm])
+    }
+  }
 
-  const handleStart = () => { setError(null); setStatus(null); setActive(true); setAlertVisible(false); setAlertDismissed(false); prevConfirmedRef.current = false }
-  const handleStop  = async () => { setActive(false); setAlertVisible(false); try { await api.post('/detect/webcam/stop') } catch { /* ignore */ } }
+  useEffect(() => () => { // cleanup on unmount
+    clearInterval(loopRef.current)
+    streamRef.current?.getTracks().forEach(t => t.stop())
+  }, [])
+
   const dismissAlert = () => { setAlertVisible(false); setAlertDismissed(true) }
-
-  const detections    = status?.detections ?? []
-  const fps           = status?.fps ?? 0
-  const threatConfirmed = status?.threat_confirmed || status?.weapon_detected || false
-  const posFrames     = status?.positive_frames ?? 0
-  const winSize       = status?.window_size ?? 0
-  const avgConf       = status?.avg_confidence ?? 0
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', paddingTop: '1rem' }}>
@@ -108,7 +222,7 @@ export default function WebcamDetection() {
             </div>
             <div>
               <h2>Live Webcam Detection</h2>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 2 }}>Real-time MJPEG stream with weapon detection overlay</p>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 2 }}>Your browser captures frames locally and sends them for detection</p>
             </div>
           </div>
 
@@ -120,7 +234,7 @@ export default function WebcamDetection() {
                   {threatConfirmed ? 'THREAT' : 'LIVE'}
                 </span>
               </div>
-              <span className="badge badge-info font-mono">{fps} FPS</span>
+              <span className="badge badge-info font-mono">{reqRate} req/s</span>
               {winSize > 0 && (
                 <span className={`badge ${threatConfirmed ? 'badge-danger' : 'badge-warning'}`}>
                   {posFrames}/{winSize} frames
@@ -133,10 +247,11 @@ export default function WebcamDetection() {
         <div className="flex items-center gap-4" style={{ flexWrap: 'wrap' }}>
           <div>
             <div className="section-label">Camera Source</div>
-            <select value={cameraIdx} onChange={e => setCameraIdx(Number(e.target.value))} disabled={active}>
-              <option value={0}>Camera 0 (default)</option>
-              <option value={1}>Camera 1</option>
-              <option value={2}>Camera 2</option>
+            <select value={deviceId} onChange={e => setDeviceId(e.target.value)} disabled={active}>
+              {devices.length === 0 && <option value="">Default camera</option>}
+              {devices.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</option>
+              ))}
             </select>
           </div>
           {!active ? (
@@ -164,21 +279,19 @@ export default function WebcamDetection() {
               pointerEvents: 'none', zIndex: 2, animation: 'pulse 1s ease-out infinite',
             }} />
           )}
-          {active ? (
-            <img
-              ref={imgRef}
-              src={`${STREAM_URL}?camera=${cameraIdx}&t=${Date.now()}`}
-              alt="Live webcam MJPEG stream with weapon detection overlay"
-              className="webcam-frame"
-              onError={() => setError('Stream connection failed. Check camera access and backend.')}
-            />
-          ) : (
+          <div style={{ position: 'relative', display: active ? 'block' : 'none' }}>
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <video ref={videoRef} muted playsInline className="webcam-frame" />
+            <canvas ref={overlayRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} />
+          </div>
+          {!active && (
             <div className="webcam-placeholder">
               <IconCamera size={40} style={{ opacity: 0.3 }} />
               <span style={{ fontSize: '0.9rem' }}>Start the live feed to see the stream</span>
-              <span className="text-xs text-muted">Requires webcam on the server machine</span>
+              <span className="text-xs text-muted">Uses your browser's camera — nothing is sent until you click Start</span>
             </div>
           )}
+          <canvas ref={captureCanvasRef} style={{ display: 'none' }} />
         </div>
 
         {/* Right: status + detections */}
@@ -240,11 +353,11 @@ export default function WebcamDetection() {
                 <h3 style={{ color: 'var(--accent-blue)' }}>Webcam Mode Notes</h3>
               </div>
               <ul style={{ color: 'var(--text-secondary)', fontSize: '0.83rem', paddingLeft: '1.1rem', lineHeight: 2.1 }}>
-                <li>MJPEG stream is served directly by the FastAPI backend.</li>
-                <li>Backend machine must have a camera at the given index.</li>
-                <li>FPS typically 10–25 on CPU hardware.</li>
+                <li>Captured entirely in your browser — the server never accesses a camera directly.</li>
+                <li>A frame is sent for detection roughly every {(CAPTURE_MS / 1000).toFixed(1)}s.</li>
+                <li>Works the same locally and once deployed to the cloud.</li>
                 <li>Alarm sounds and modal appears on weapon confirmation.</li>
-                <li>SMS alerts are rate-limited to one per 60 seconds.</li>
+                <li>Email alerts are rate-limited to one per 60 seconds.</li>
               </ul>
             </div>
           )}

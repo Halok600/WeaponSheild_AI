@@ -1,10 +1,10 @@
 import { useState, useRef } from 'react'
-import api from '../api/axiosClient'
+import api, { API_BASE } from '../api/axiosClient'
 import AlertBadge from './AlertBadge'
 import DetectionLog from './DetectionLog'
 import { IconImage, IconUpload, IconCrosshair, IconCheck, IconAlert, IconSend } from './Icons'
 
-export default function ImageDetection() {
+export default function ImageDetection({ alertEmail }) {
   const [file, setFile]       = useState(null)
   const [preview, setPreview] = useState(null)
   const [result, setResult]   = useState(null)
@@ -24,6 +24,7 @@ export default function ImageDetection() {
     try {
       const form = new FormData()
       form.append('file', file)
+      if (alertEmail) form.append('alert_email', alertEmail)
       const { data } = await api.post('/detect/image', form)
       setResult(data)
     } catch (err) {
@@ -101,7 +102,7 @@ export default function ImageDetection() {
               <div className="section-label" style={{ color: result.weapon_detected ? 'var(--danger)' : undefined }}>
                 {result.weapon_detected ? '⚠ Annotated — Weapon Found' : '✓ Annotated — Clear'}
               </div>
-              <img src={result.output_url} alt="Annotated detection result" className="img-preview" />
+              <img src={`${API_BASE}${result.output_url}`} alt="Annotated detection result" className="img-preview" />
             </div>
           )}
         </div>
@@ -133,15 +134,15 @@ export default function ImageDetection() {
         </div>
       )}
 
-      {/* ── SMS alert info ── */}
+      {/* ── Email alert info ── */}
       {result?.alert && (
         <div className={`card ${result.alert.sent ? 'card-success' : ''}`} style={{ padding: '1rem 1.25rem' }}>
           <div className="flex items-center gap-3">
             <IconSend size={18} style={{ color: result.alert.sent ? 'var(--accent-green)' : 'var(--text-muted)', flexShrink: 0 }} />
             <div>
-              <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>SMS Alert</div>
+              <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>Email Alert</div>
               <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                {result.alert.sent ? `Sent ✓  SID: ${result.alert.sid}` : `Not sent — ${result.alert.reason}`}
+                {result.alert.sent ? `Sent ✓ to ${alertEmail}` : `Not sent — ${result.alert.reason}`}
               </div>
             </div>
           </div>

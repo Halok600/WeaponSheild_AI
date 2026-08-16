@@ -10,4 +10,4 @@ Write-Host "==> Using packages from: $trustedSitePackages" -ForegroundColor Dark
 
 $env:PYTHONPATH = "$trustedSitePackages;$env:PYTHONPATH"
 
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+C:\Users\lenovo\venvs\major_ii\Scripts\python.exe -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
