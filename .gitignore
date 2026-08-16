@@ -17,7 +17,7 @@ outputs/
 runs/
 val2017/
 *.pt
-training.log
+*.log
 
 # Root-level model/ (weights dir) is ignored except the final deployed weights —
 # Render needs best.pt in the repo since it has no separate model-storage step.

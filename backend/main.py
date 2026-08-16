@@ -7,8 +7,13 @@ Run with:
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
