@@ -164,9 +164,14 @@ names: ['Pistol', 'Rifle', 'Knife']
 
 
 if __name__ == "__main__":
+    sources = [Path("dataset_roboflow"), Path("dataset_roboflow_edi")]
+    kaggle_relabeled = Path("dataset_kaggle_relabeled")
+    if kaggle_relabeled.exists():
+        sources.append(kaggle_relabeled)
+
     build(
         output_dir=Path("dataset_multiclass"),
-        sources=[Path("dataset_roboflow"), Path("dataset_roboflow_edi")],
+        sources=sources,
         bg_dir=Path("val2017"),
         n_negatives=5000,
     )
