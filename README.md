@@ -1,4 +1,4 @@
-# WeaponShield AI — Weapon Detection System
+# ⚔️WeaponShield🛡️ AI — Weapon Detection System
 
 > **Final-Year Engineering Project** | YOLOv8 · FastAPI · React · OpenCV · Twilio
 
