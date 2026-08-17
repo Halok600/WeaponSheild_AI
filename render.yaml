@@ -1,14 +1,15 @@
 # Render Blueprint for the WeaponShield AI backend.
 # Deploy: https://dashboard.render.com/blueprints -> New Blueprint Instance -> pick this repo.
 #
-# NOTE: Render's free/starter instances have limited RAM (512MB-1GB). YOLOv8 + torch
-# (CPU inference, no GPU on Render) is memory-hungry — if the service crashes or the
-# model fails to load, upgrade to a plan with more RAM.
+# NOTE: "free" plan gives 512MB RAM. YOLOv8 + torch (CPU inference, no GPU on
+# Render) is memory-hungry — if the service crashes on model load or OOMs during
+# inference, that's the free tier's RAM limit being hit; a paid plan with more
+# RAM would fix it, but this is deliberately left on "free" for now.
 services:
   - type: web
     name: weaponshield-backend
     runtime: python
-    plan: starter
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
