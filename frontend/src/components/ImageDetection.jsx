@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
-import api, { API_BASE } from '../api/axiosClient'
+import api from '../api/axiosClient'
+import useMediaBlobUrl from '../hooks/useMediaBlobUrl'
 import AlertBadge from './AlertBadge'
 import DetectionLog from './DetectionLog'
 import { IconImage, IconUpload, IconCrosshair, IconCheck, IconAlert, IconSend } from './Icons'
@@ -12,6 +13,7 @@ export default function ImageDetection() {
   const [error, setError]     = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef()
+  const outputBlobUrl = useMediaBlobUrl(result?.output_url)
 
   const handleFile = (f) => {
     if (!f) return
@@ -101,7 +103,9 @@ export default function ImageDetection() {
               <div className="section-label" style={{ color: result.weapon_detected ? 'var(--danger)' : undefined }}>
                 {result.weapon_detected ? '⚠ Annotated — Weapon Found' : '✓ Annotated — Clear'}
               </div>
-              <img src={`${API_BASE}${result.output_url}`} alt="Annotated detection result" className="img-preview" />
+              {outputBlobUrl
+                ? <img src={outputBlobUrl} alt="Annotated detection result" className="img-preview" />
+                : <div className="img-preview" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200 }}><span className="spinner" /></div>}
             </div>
           )}
         </div>

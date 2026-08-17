@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import api, { API_BASE } from '../api/axiosClient'
+import api from '../api/axiosClient'
+import useMediaBlobUrl from '../hooks/useMediaBlobUrl'
 import AlertBadge from './AlertBadge'
 import DetectionLog from './DetectionLog'
 import { IconVideo, IconUpload, IconPlay, IconCheck, IconAlert, IconSend, IconSettings, IconZap } from './Icons'
@@ -16,6 +17,7 @@ export default function VideoDetection() {
   const [dragOver, setDragOver]     = useState(false)
   const pollRef = useRef(null)
   const inputRef = useRef()
+  const outputBlobUrl = useMediaBlobUrl(job?.output_url)
 
   const [stopOnFirst, setStopOnFirst]         = useState(false)
   const [frameSkip, setFrameSkip]             = useState(0)
@@ -203,10 +205,16 @@ export default function VideoDetection() {
           {job.output_url && (
             <div className="card" style={{ padding: '1rem' }}>
               <div className="section-label mb-3">Processed Output</div>
-              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-              <video key={job.output_url} controls style={{ width: '100%', borderRadius: 'var(--radius-lg)', background: '#000' }}>
-                <source src={`${API_BASE}${job.output_url}`} type="video/mp4" />
-              </video>
+              {outputBlobUrl ? (
+                // eslint-disable-next-line jsx-a11y/media-has-caption
+                <video key={job.output_url} controls style={{ width: '100%', borderRadius: 'var(--radius-lg)', background: '#000' }}>
+                  <source src={outputBlobUrl} type="video/mp4" />
+                </video>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200, background: '#000', borderRadius: 'var(--radius-lg)' }}>
+                  <span className="spinner" />
+                </div>
+              )}
             </div>
           )}
           <div className="flex flex-col gap-3">
