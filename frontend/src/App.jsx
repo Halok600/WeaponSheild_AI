@@ -3,7 +3,7 @@ import './index.css'
 import ImageDetection from './components/ImageDetection'
 import VideoDetection from './components/VideoDetection'
 import WebcamDetection from './components/WebcamDetection'
-import { IconVideo, IconImage, IconCamera, IconMail, IconCheck } from './components/Icons'
+import { IconVideo, IconImage, IconCamera } from './components/Icons'
 import api from './api/axiosClient'
 
 const TABS = [
@@ -12,30 +12,15 @@ const TABS = [
   { id: 'webcam', label: 'Live Webcam', Icon: IconCamera, desc: 'Real-time webcam stream detection' },
 ]
 
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
-const ALERT_EMAIL_KEY = 'weaponshield_alert_email'
-
 export default function App() {
   const [tab, setTab] = useState('video')
   const [backendOk, setBackendOk] = useState(null)
-  const [alertEmail, setAlertEmail] = useState(() => localStorage.getItem(ALERT_EMAIL_KEY) || '')
 
   useEffect(() => {
     api.get('/health')
       .then(() => setBackendOk(true))
       .catch(() => setBackendOk(false))
   }, [])
-
-  const emailValid = EMAIL_RE.test(alertEmail.trim())
-
-  const handleEmailChange = (value) => {
-    setAlertEmail(value)
-    if (EMAIL_RE.test(value.trim())) {
-      localStorage.setItem(ALERT_EMAIL_KEY, value.trim())
-    } else if (!value.trim()) {
-      localStorage.removeItem(ALERT_EMAIL_KEY)
-    }
-  }
 
   return (
     <div className="app-shell">
@@ -79,24 +64,6 @@ export default function App() {
             </div>
 
           </div>
-
-          {/* ── Alert email bar ── */}
-          <div className="alert-email-bar">
-            <IconMail size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-            <input
-              type="email"
-              placeholder="Email address for weapon-detection alerts (optional)"
-              value={alertEmail}
-              onChange={e => handleEmailChange(e.target.value)}
-              className="alert-email-input"
-              aria-label="Alert email address"
-            />
-            {alertEmail.trim() && (
-              emailValid
-                ? <span className="badge badge-success" style={{ fontSize: '0.68rem' }}><IconCheck size={11} /> Saved</span>
-                : <span className="badge badge-warning" style={{ fontSize: '0.68rem' }}>Invalid email</span>
-            )}
-          </div>
         </div>
       </header>
 
@@ -120,9 +87,9 @@ export default function App() {
 
           {/* ── Tab panels ── */}
           <div role="tabpanel" aria-labelledby={`tab-${tab}`} className="fade-in" key={tab} style={{ marginTop: '0.25rem' }}>
-            {tab === 'video'  && <VideoDetection alertEmail={emailValid ? alertEmail.trim() : ''} />}
-            {tab === 'image'  && <ImageDetection alertEmail={emailValid ? alertEmail.trim() : ''} />}
-            {tab === 'webcam' && <WebcamDetection alertEmail={emailValid ? alertEmail.trim() : ''} />}
+            {tab === 'video'  && <VideoDetection />}
+            {tab === 'image'  && <ImageDetection />}
+            {tab === 'webcam' && <WebcamDetection />}
           </div>
 
         </div>

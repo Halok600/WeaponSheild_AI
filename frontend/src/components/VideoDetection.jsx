@@ -6,7 +6,7 @@ import { IconVideo, IconUpload, IconPlay, IconCheck, IconAlert, IconSend, IconSe
 
 const POLL_MS = 1500
 
-export default function VideoDetection({ alertEmail }) {
+export default function VideoDetection() {
   const [file, setFile]             = useState(null)
   const [jobId, setJobId]           = useState(null)
   const [job, setJob]               = useState(null)
@@ -55,7 +55,6 @@ export default function VideoDetection({ alertEmail }) {
       form.append('blur_strength', blurStrength)
       form.append('low_res', lowRes)
       form.append('conf_threshold', submittedConf)
-      if (alertEmail) form.append('alert_email', alertEmail)
       const { data } = await api.post('/detect/video', form, {
         onUploadProgress: (e) => { if (e.total) setUploadPct(Math.round((e.loaded / e.total) * 100)) }
       })

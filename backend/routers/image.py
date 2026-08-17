@@ -7,9 +7,8 @@ Accepts an uploaded image, runs YOLO detection, returns:
   • weapon_detected flag
   • alert dispatch result (email via Resend)
 
-Alert fires when:
-  • Any detection passes the confidence threshold AND
-  • The caller supplied a valid alert_email
+Alert fires when any detection passes the confidence threshold — it always
+goes to the fixed operator address configured via ALERT_TO_EMAIL.
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from config import IMAGE_CONFIDENCE_THRESHOLD, OUTPUTS_DIR
@@ -31,16 +30,12 @@ router = APIRouter(prefix="/detect", tags=["Image Detection"])
 
 
 @router.post("/image")
-async def detect_image(
-    file: UploadFile = File(...),
-    alert_email: str | None = Form(None),
-) -> JSONResponse:
+async def detect_image(file: UploadFile = File(...)) -> JSONResponse:
     """
     Upload an image (jpeg/png/bmp/webp) and receive weapon detections.
 
     Args:
-        file:        Image file to scan.
-        alert_email: Optional email address to notify if a weapon is found.
+        file: Image file to scan.
 
     Returns:
         job_id:          Unique identifier for this request.
@@ -96,7 +91,6 @@ async def detect_image(
         alert_result = send_weapon_alert(
             timestamp=time.strftime("%H:%M:%S"),
             confidence=top.confidence,
-            to_email=alert_email,
             session_id=job_id,
             label=top.label,
         )

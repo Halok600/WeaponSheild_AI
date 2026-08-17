@@ -4,7 +4,7 @@ import AlertBadge from './AlertBadge'
 import DetectionLog from './DetectionLog'
 import { IconImage, IconUpload, IconCrosshair, IconCheck, IconAlert, IconSend } from './Icons'
 
-export default function ImageDetection({ alertEmail }) {
+export default function ImageDetection() {
   const [file, setFile]       = useState(null)
   const [preview, setPreview] = useState(null)
   const [result, setResult]   = useState(null)
@@ -24,7 +24,6 @@ export default function ImageDetection({ alertEmail }) {
     try {
       const form = new FormData()
       form.append('file', file)
-      if (alertEmail) form.append('alert_email', alertEmail)
       const { data } = await api.post('/detect/image', form)
       setResult(data)
     } catch (err) {
@@ -142,7 +141,7 @@ export default function ImageDetection({ alertEmail }) {
             <div>
               <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>Email Alert</div>
               <div className="text-xs text-muted" style={{ marginTop: 2 }}>
-                {result.alert.sent ? `Sent ✓ to ${alertEmail}` : `Not sent — ${result.alert.reason}`}
+                {result.alert.sent ? 'Sent ✓ to the operator' : `Not sent — ${result.alert.reason}`}
               </div>
             </div>
           </div>

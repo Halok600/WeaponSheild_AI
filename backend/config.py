@@ -13,9 +13,15 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # ── Resend (email alerts) ────────────────────────────────────────────────────
+# Resend's shared sandbox sender (onboarding@resend.dev, used when no custom
+# domain is verified) only allows sending to the email address that owns the
+# Resend account — sending to arbitrary visitor-supplied addresses gets a 403.
+# So alerts go to one fixed operator address rather than a per-visitor one.
 RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL: str = os.getenv("RESEND_FROM_EMAIL", "WeaponShield AI <onboarding@resend.dev>")
-RESEND_ENABLED: bool = bool(RESEND_API_KEY)
+# Comma-separate multiple addresses if more than one person should be notified.
+ALERT_TO_EMAILS: list[str] = [e.strip() for e in os.getenv("ALERT_TO_EMAIL", "").split(",") if e.strip()]
+RESEND_ENABLED: bool = bool(RESEND_API_KEY and ALERT_TO_EMAILS)
 
 # ── Model — fallback chain: best.pt → yolov8n.pt ─────────────────────────────
 BASE_DIR: Path = Path(__file__).parent

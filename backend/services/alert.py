@@ -4,32 +4,31 @@ alert.py – Resend email alert dispatcher with per-session rate-limiting and
 
 Features:
   • send_weapon_alert()  – convenience wrapper with correct alert email format
-  • send_alert()         – low-level dispatcher (message, session_id, to_email)
+  • send_alert()         – low-level dispatcher (subject, html, session_id)
   • reset_cooldown()     – reset per-session timer (call on new upload)
   • Cooldown guard       – prevents flooding for the same session
   • Event-hash dedup     – same timestamp+confidence won't fire twice
-  • Graceful degradation – logs to console if Resend is unconfigured or no
-                            recipient email was given
+  • Graceful degradation – logs to console if Resend/ALERT_TO_EMAIL aren't
+                            configured
 
-Unlike the old Twilio integration (fixed phone number from .env), the
-recipient email is supplied per-request by the user via the frontend, since
-each visitor can ask to be alerted at their own address.
+Alerts always go to the single fixed ALERT_TO_EMAIL address (the operator),
+not a per-visitor address — Resend's shared sandbox sender only allows
+sending to the email that owns the Resend account, so a per-visitor address
+would just get rejected with 403 regardless of what the caller passes in.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
-import re
 import time
 from threading import Lock
 
 import httpx
 
-from config import ALERT_COOLDOWN_SECONDS, RESEND_API_KEY, RESEND_ENABLED, RESEND_FROM_EMAIL
+from config import ALERT_COOLDOWN_SECONDS, ALERT_TO_EMAILS, RESEND_API_KEY, RESEND_ENABLED, RESEND_FROM_EMAIL
 
 logger = logging.getLogger(__name__)
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _RESEND_URL = "https://api.resend.com/emails"
 
 # Per-session last-alert timestamps  {session_id: epoch_float}
@@ -39,29 +38,22 @@ _alerted_events: set[str] = set()
 _lock = Lock()
 
 
-def _is_valid_email(email: str | None) -> bool:
-    return bool(email and _EMAIL_RE.match(email.strip()))
-
-
 # ── Convenience weapon-alert wrapper ─────────────────────────────────────────
 def send_weapon_alert(
     *,
     timestamp: str,
     confidence: float,
-    to_email: str | None,
     session_id: str = "global",
     label: str = "Weapon",
 ) -> dict:
     """
-    Fire a Resend email alert:
+    Fire a Resend email alert to the fixed operator address:
         Subject: Weapon Alert - Pistol detected
         Body:    Pistol detected at 00:01:23 with confidence 87%
 
     Args:
         timestamp:  Human-readable timestamp string e.g. '00:01:23'.
         confidence: Detection confidence 0.0–1.0.
-        to_email:   Recipient email address supplied by the user. If missing
-                    or invalid, the alert is skipped (no email configured).
         session_id: Per-session rate-limit key.
         label:      Detected weapon class name.
 
@@ -90,7 +82,7 @@ def send_weapon_alert(
             logger.debug("Duplicate event skipped: %s", event_key)
             return {"sent": False, "reason": "duplicate_event", "id": None}
 
-    result = send_alert(subject=subject, html=html, session_id=session_id, to_email=to_email)
+    result = send_alert(subject=subject, html=html, session_id=session_id)
 
     if result["sent"]:
         with _lock:
@@ -104,28 +96,21 @@ def send_alert(
     *,
     subject: str,
     html: str,
-    to_email: str | None,
     session_id: str = "global",
 ) -> dict:
     """
-    Send an email alert via Resend if:
-      1. Resend is configured.
-      2. A valid recipient email was supplied.
-      3. Cooldown period has elapsed for the given session.
+    Send an email alert via Resend to the fixed ALERT_TO_EMAIL address if:
+      1. Resend + ALERT_TO_EMAIL are configured.
+      2. Cooldown period has elapsed for the given session.
 
     Args:
         subject:    Email subject line.
         html:       Email HTML body.
-        to_email:   Recipient email address.
         session_id: Unique key for rate-limiting (e.g. job_id or webcam session id).
 
     Returns:
         dict with keys: sent (bool), reason (str), id (str | None)
     """
-    if not _is_valid_email(to_email):
-        logger.debug("[ALERT] No valid recipient email provided — skipping.")
-        return {"sent": False, "reason": "no_email_provided", "id": None}
-
     now = time.time()
 
     with _lock:
@@ -138,17 +123,17 @@ def send_alert(
         _last_alert[session_id] = now
 
     if not RESEND_ENABLED:
-        logger.warning("[ALERT – Resend not configured] %s -> %s", subject, to_email)
-        return {"sent": False, "reason": "resend_not_configured", "id": None}
+        logger.warning("[ALERT – Resend/ALERT_TO_EMAIL not configured] %s", subject)
+        return {"sent": False, "reason": "alerts_not_configured", "id": None}
 
     try:
-        logger.info("[RESEND] Sending email to %s", to_email)
+        logger.info("[RESEND] Sending email to %s", ALERT_TO_EMAILS)
         resp = httpx.post(
             _RESEND_URL,
             headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
             json={
                 "from": RESEND_FROM_EMAIL,
-                "to": [to_email.strip()],
+                "to": ALERT_TO_EMAILS,
                 "subject": subject,
                 "html": html,
             },
@@ -160,7 +145,7 @@ def send_alert(
         return {"sent": True, "reason": "ok", "id": data.get("id")}
     except Exception as exc:
         err_str = str(exc)
-        logger.error("[RESEND] Send FAILED: %s  to=%s", err_str, to_email)
+        logger.error("[RESEND] Send FAILED: %s", err_str)
         return {"sent": False, "reason": err_str, "id": None}
 
 

@@ -6,7 +6,7 @@ import { IconCamera, IconPlay, IconStop, IconCheck, IconAlert, IconInfo, IconEye
 const CAPTURE_MS   = 600   // interval between frames sent to the backend
 const CAPTURE_WIDTH = 640  // frames are downscaled to this before upload
 
-export default function WebcamDetection({ alertEmail }) {
+export default function WebcamDetection() {
   const [active, setActive]             = useState(false)
   const [error, setError]               = useState(null)
   const [devices, setDevices]           = useState([])
@@ -105,7 +105,6 @@ export default function WebcamDetection({ alertEmail }) {
       const form = new FormData()
       form.append('file', blob, 'frame.jpg')
       form.append('session_id', sessionIdRef.current)
-      if (alertEmail) form.append('alert_email', alertEmail)
 
       const t0 = performance.now()
       const { data } = await api.post('/detect/webcam/frame', form)
@@ -130,7 +129,7 @@ export default function WebcamDetection({ alertEmail }) {
     } finally {
       inFlightRef.current = false
     }
-  }, [alertEmail, alertDismissed, playAlarm, drawOverlay])
+  }, [alertDismissed, playAlarm, drawOverlay])
 
   const handleStart = async () => {
     setError(null)

@@ -68,15 +68,13 @@ def _get_session(session_id: str) -> FrameBuffer:
 async def submit_frame(
     file: UploadFile = File(...),
     session_id: str = Form(...),
-    alert_email: str | None = Form(None),
 ) -> JSONResponse:
     """
     Submit one browser-captured frame for detection.
 
     Args:
-        file:        JPEG/PNG frame captured client-side from the user's webcam.
-        session_id:  Client-generated ID identifying this viewer's live session.
-        alert_email: Optional email to notify once a weapon is confirmed.
+        file:       JPEG/PNG frame captured client-side from the user's webcam.
+        session_id: Client-generated ID identifying this viewer's live session.
 
     Returns:
         detections, frame_width/height (for overlay scaling), threat_confirmed,
@@ -106,7 +104,6 @@ async def submit_frame(
         alert_result = send_weapon_alert(
             timestamp=time.strftime("%H:%M:%S"),
             confidence=buf.get_avg_confidence(),
-            to_email=alert_email,
             session_id=session_id,
             label=top_label,
         )

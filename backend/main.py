@@ -91,15 +91,15 @@ def health() -> dict:
 
 # ── Manual email alert test ──────────────────────────────────────────────────
 @app.post("/test-alert", tags=["System"])
-def test_alert(email: str) -> dict:
+def test_alert() -> dict:
     """
-    Send a test email to verify Resend configuration.
-    Visit http://localhost:8000/docs and click POST /test-alert → Try it out.
+    Send a test email to the fixed ALERT_TO_EMAIL address to verify Resend
+    configuration. Visit http://localhost:8000/docs and click
+    POST /test-alert → Try it out.
     """
     result = send_alert(
         subject="WeaponShield AI - Test Alert",
         html="<p>&#128276; WeaponShield AI &ndash; Test alert. Resend is configured correctly!</p>",
-        to_email=email,
         session_id="__test__",
     )
     # Reset cooldown so it can be retried immediately

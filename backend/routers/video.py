@@ -73,7 +73,6 @@ def _process_video(
     blur_strength: int,
     low_res: bool,
     conf_threshold: float = CONFIDENCE_THRESHOLD,
-    alert_email: str | None = None,
 ) -> None:
     """
     Frame-by-frame video processing running in a thread pool.
@@ -192,7 +191,6 @@ def _process_video(
                 job["alert"] = send_weapon_alert(
                     timestamp=timestamp_str,
                     confidence=buf.get_avg_confidence(),
-                    to_email=alert_email,
                     session_id=job_id,
                     label=top_label,
                 )
@@ -249,7 +247,6 @@ async def upload_video(
     blur_strength: int = Form(0),
     low_res: bool = Form(False),
     conf_threshold: float = Form(CONFIDENCE_THRESHOLD),
-    alert_email: str | None = Form(None),
 ) -> JSONResponse:
     """
     Upload a video file and start asynchronous weapon detection.
@@ -262,7 +259,6 @@ async def upload_video(
       add_noise         – simulate CCTV Gaussian noise
       blur_strength     – simulate CCTV blur (kernel size)
       low_res           – simulate low-resolution CCTV feed
-      alert_email       – email address to notify if a weapon is confirmed
     """
     allowed_ext = {".mp4", ".avi", ".mov", ".mkv"}
     suffix = Path(file.filename or "").suffix.lower()
@@ -304,7 +300,6 @@ async def upload_video(
         blur_strength,
         low_res,
         conf_threshold,
-        alert_email,
     )
 
     return JSONResponse({"job_id": job_id, "status": JobStatus.QUEUED}, status_code=202)
