@@ -54,7 +54,7 @@ export default function App() {
             </a>
 
             {/* Centre: Tab nav */}
-            <nav className="tabs" aria-label="Detection mode" style={{ margin: 0, flex: 1, maxWidth: 480, padding: '0.25rem' }}>
+            <nav className="tabs header-tabs" aria-label="Detection mode">
               {TABS.map(({ id, label, Icon }) => (
                 <button
                   key={id}
