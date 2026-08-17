@@ -35,7 +35,7 @@ from services.frame_buffer import FrameBuffer
 router = APIRouter(prefix="/detect", tags=["Webcam Detection"])
 
 FRAME_WINDOW              = 10   # sliding window size
-DETECTION_COUNT_THRESHOLD = 4    # min positive frames to confirm a threat (out of 10)
+DETECTION_COUNT_THRESHOLD = 2    # min positive frames to confirm a threat (out of 10)
 SESSION_TTL_SECONDS       = 600  # drop sessions idle longer than this
 
 # session_id -> {"buffer": FrameBuffer, "last_seen": float}

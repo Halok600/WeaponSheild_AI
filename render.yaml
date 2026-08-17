@@ -33,7 +33,7 @@ services:
       - key: IMAGE_CONFIDENCE_THRESHOLD
         value: "0.60"
       - key: WEBCAM_CONFIDENCE_THRESHOLD
-        value: "0.70"
+        value: "0.45"
       - key: FRAME_WINDOW
         value: "10"
       - key: DETECTION_COUNT_THRESHOLD
