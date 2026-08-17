@@ -11,6 +11,7 @@ Provides:
 from __future__ import annotations
 
 import cv2
+import imageio
 import numpy as np
 
 from config import INFERENCE_WIDTH
@@ -77,24 +78,36 @@ def frames_to_video(
     output_path: str,
 ) -> None:
     """
-    Write a list of BGR frames to an MP4 output file.
+    Write a list of BGR frames to an H.264-encoded MP4 output file.
 
     Args:
         frames:      List of annotated BGR frames (all same shape).
         fps:         Frames per second of the output video.
         output_path: Absolute path for the output file.
+
+    Note:
+        Uses imageio's ffmpeg backend (imageio-ffmpeg ships a portable,
+        static ffmpeg binary — no system install needed) to encode real
+        H.264, not cv2.VideoWriter's "mp4v" fourcc. mp4v produces an .mp4
+        container browsers can't actually play — they expect H.264/VP9,
+        and OpenCV's own H.264 encoder isn't reliably available across
+        platforms (fails outright on this project's Windows dev machine).
     """
     if not frames:
         raise ValueError("No frames to write.")
 
-    h, w = frames[0].shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
+    writer = imageio.get_writer(
+        output_path,
+        fps=fps,
+        codec="libx264",
+        pixelformat="yuv420p",
+        macro_block_size=1,  # preserve exact frame dimensions, no auto-padding
+    )
     try:
         for f in frames:
-            writer.write(f)
+            writer.append_data(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
     finally:
-        writer.release()
+        writer.close()
 
 
 def draw_timestamp(frame: np.ndarray, timestamp: str) -> None:
