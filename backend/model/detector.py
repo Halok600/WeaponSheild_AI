@@ -1,18 +1,25 @@
 """
-detector.py – Singleton YOLO weapon detector.
+detector.py – Singleton weapon detector running on ONNX Runtime.
 
 Loads the model once at app startup and exposes:
   • detect(frame)         → list of Detection dicts
   • annotate(frame, dets) → annotated BGR frame
   • draw_fps()            → overlay FPS counter
 
+Uses ONNX Runtime instead of full PyTorch/Ultralytics for inference — ONNX
+Runtime has no autograd/training machinery, so its memory footprint is far
+smaller, which matters on constrained hosts (e.g. Render's free tier, 512MB).
+Since ONNX Runtime doesn't provide YOLO's pre/post-processing convenience
+methods, letterbox resizing, box decoding, and NMS are implemented here
+manually.
+
 Model loading follows a priority fallback chain (configured in config.py):
   1. MODEL_PATH env var (if file exists)
-  2. ../model/best.pt     (custom fine-tuned weights)
-  3. yolov8n.pt           (base model, auto-downloaded by ultralytics)
+  2. ../model/best.onnx   (custom fine-tuned weights, ONNX export)
 """
 from __future__ import annotations
 
+import ast
 import logging
 import time
 from dataclasses import dataclass
@@ -20,11 +27,13 @@ from typing import ClassVar
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
+import onnxruntime as ort
 
 from config import CONFIDENCE_THRESHOLD, MODEL_PATH, WEAPON_CLASS_IDS
 
 logger = logging.getLogger(__name__)
+
+NMS_IOU_THRESHOLD = 0.7  # matches Ultralytics' own default predict() IoU
 
 # ── Colour palette (BGR) per class index ────────────────────────────────────
 _PALETTE = [
@@ -73,59 +82,59 @@ class WeaponDetector:
 
     def load(self) -> None:
         """
-        Load YOLO model following the fallback chain resolved by config.py.
+        Load the ONNX model following the fallback chain resolved by config.py.
         Called once during FastAPI startup via the lifespan context manager.
         """
         if self._loaded:
             return
 
-        # Check GPU availability and log
-        try:
-            import torch
-            gpu_available = torch.cuda.is_available()
-            device_name = torch.cuda.get_device_name(0) if gpu_available else "CPU"
-            logger.info("Compute device: %s", device_name)
-        except ImportError:
-            gpu_available = False
-            logger.info("PyTorch not installed — GPU check skipped.")
-
-        logger.info("Loading YOLO model from: %s", MODEL_PATH)
+        logger.info("Loading ONNX model from: %s", MODEL_PATH)
         start = time.perf_counter()
 
-        # PyTorch >=2.6 changed the default of torch.load to weights_only=True.
-        # YOLOv8 .pt checkpoints contain Python objects (DetectionModel etc.) and
-        # require weights_only=False. Since best.pt is our own trained model we
-        # trust it, so we patch torch.load temporarily to preserve old behaviour.
-        try:
-            import torch
-            import functools
-            _original_torch_load = torch.load
+        self._session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+        input_meta = self._session.get_inputs()[0]
+        self._input_name = input_meta.name
+        self._input_size = int(input_meta.shape[2])  # square input, e.g. 640
+        self._output_name = self._session.get_outputs()[0].name
 
-            @functools.wraps(_original_torch_load)
-            def _patched_torch_load(f, *args, **kwargs):
-                kwargs.setdefault("weights_only", False)
-                return _original_torch_load(f, *args, **kwargs)
+        # Class names are embedded in the ONNX export's metadata by Ultralytics,
+        # e.g. "{0: 'Pistol', 1: 'Rifle', 2: 'Knife'}"
+        meta = self._session.get_modelmeta().custom_metadata_map
+        names_raw = meta.get("names", "{}")
+        self.class_names: dict[int, str] = ast.literal_eval(names_raw)
 
-            torch.load = _patched_torch_load
-            self.model = YOLO(MODEL_PATH)
-        finally:
-            # Always restore the original torch.load after model is loaded
-            torch.load = _original_torch_load
         elapsed = time.perf_counter() - start
-
-        self.class_names: dict[int, str] = self.model.names  # {0: 'person', …}
+        self.model_path = MODEL_PATH
         self._loaded = True
-        self._gpu_available = gpu_available
 
         logger.info(
-            "Model loaded in %.2fs — %d classes. Weapon filter: %s. GPU: %s",
+            "Model loaded in %.2fs — %d classes. Weapon filter: %s.",
             elapsed,
             len(self.class_names),
             WEAPON_CLASS_IDS if WEAPON_CLASS_IDS else "ALL (fine-tuned model)",
-            "yes" if gpu_available else "no (CPU mode)",
         )
 
-    # ── Core inference ───────────────────────────────────────────────────
+    # ── Preprocessing ────────────────────────────────────────────────────────
+    def _letterbox(self, frame: np.ndarray) -> tuple[np.ndarray, float, int, int]:
+        """Resize+pad frame to a square input, preserving aspect ratio."""
+        h0, w0 = frame.shape[:2]
+        size = self._input_size
+        scale = min(size / w0, size / h0)
+        nw, nh = int(round(w0 * scale)), int(round(h0 * scale))
+        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+
+        pad_w, pad_h = size - nw, size - nh
+        top, left = pad_h // 2, pad_w // 2
+        bottom, right = pad_h - top, pad_w - left
+        padded = cv2.copyMakeBorder(
+            resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114)
+        )
+
+        img = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        img = img.transpose(2, 0, 1)[None]  # (1, 3, size, size)
+        return np.ascontiguousarray(img), scale, left, top
+
+    # ── Core inference ───────────────────────────────────────────────────────
     def detect(self, frame: np.ndarray, conf: float | None = None) -> list[Detection]:
         """
         Run inference on a single BGR frame.
@@ -136,53 +145,66 @@ class WeaponDetector:
             conf:  Optional confidence threshold override. Defaults to CONFIDENCE_THRESHOLD
                    from config. Use a lower value (e.g. 0.35) for video frames which
                    have compression artifacts and motion blur.
-
-        Note:
-            A hard post-inference filter is applied in addition to YOLO's internal
-            `conf` parameter. Custom-trained weights sometimes bypass the model-level
-            conf filter, so we enforce the threshold explicitly on every result box.
         """
         if not self._loaded:
             raise RuntimeError("Detector not loaded. Call .load() first.")
 
-        # Resolve threshold once — used both for YOLO and the hard post-filter
         threshold = conf if conf is not None else CONFIDENCE_THRESHOLD
+        h0, w0 = frame.shape[:2]
 
-        results = self.model(
-            frame,
-            conf=threshold,
-            verbose=False,
-        )[0]
+        input_tensor, scale, pad_x, pad_y = self._letterbox(frame)
+        raw = self._session.run([self._output_name], {self._input_name: input_tensor})[0]
+
+        # raw shape: (1, 4+nc, num_anchors) -> (num_anchors, 4+nc)
+        preds = raw[0].T
+        boxes_cxcywh = preds[:, :4]
+        class_scores = preds[:, 4:]
+        class_ids = np.argmax(class_scores, axis=1)
+        confidences = class_scores[np.arange(len(class_scores)), class_ids]
+
+        mask = confidences >= threshold
+        if WEAPON_CLASS_IDS:
+            mask &= np.isin(class_ids, WEAPON_CLASS_IDS)
+
+        boxes_cxcywh = boxes_cxcywh[mask]
+        confidences = confidences[mask]
+        class_ids = class_ids[mask]
+
+        if len(boxes_cxcywh) == 0:
+            return []
+
+        cx, cy, bw, bh = boxes_cxcywh[:, 0], boxes_cxcywh[:, 1], boxes_cxcywh[:, 2], boxes_cxcywh[:, 3]
+        x1 = cx - bw / 2
+        y1 = cy - bh / 2
+
+        nms_boxes = np.stack([x1, y1, bw, bh], axis=1).tolist()
+        indices = cv2.dnn.NMSBoxes(nms_boxes, confidences.tolist(), threshold, NMS_IOU_THRESHOLD)
+        if len(indices) == 0:
+            return []
+        indices = np.array(indices).flatten()
 
         detections: list[Detection] = []
-        for box in results.boxes:
-            cls_id = int(box.cls[0])
-            if WEAPON_CLASS_IDS and cls_id not in WEAPON_CLASS_IDS:
-                continue
-            box_conf = float(box.conf[0])
+        for i in indices:
+            # Undo letterbox padding/scaling to map back to original frame coords
+            ox1 = (x1[i] - pad_x) / scale
+            oy1 = (y1[i] - pad_y) / scale
+            ox2 = (x1[i] + bw[i] - pad_x) / scale
+            oy2 = (y1[i] + bh[i] - pad_y) / scale
+            ox1 = max(0, min(w0, ox1))
+            oy1 = max(0, min(h0, oy1))
+            ox2 = max(0, min(w0, ox2))
+            oy2 = max(0, min(h0, oy2))
 
-            # ── Hard post-inference filter ────────────────────────────────────
-            # Custom best.pt weights can bypass YOLO's built-in conf parameter
-            # and return low-confidence boxes regardless. This guarantees the
-            # user-specified threshold is always enforced.
-            if box_conf < threshold:
-                logger.debug(
-                    "Skipping box: conf=%.3f below threshold=%.3f",
-                    box_conf, threshold,
-                )
-                continue
-
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
-            label = self.class_names.get(cls_id, str(cls_id))
+            cls_id = int(class_ids[i])
             detections.append(
                 Detection(
-                    label=label,
+                    label=self.class_names.get(cls_id, str(cls_id)),
                     class_id=cls_id,
-                    confidence=box_conf,
-                    x1=x1,
-                    y1=y1,
-                    x2=x2,
-                    y2=y2,
+                    confidence=float(confidences[i]),
+                    x1=int(ox1),
+                    y1=int(oy1),
+                    x2=int(ox2),
+                    y2=int(oy2),
                 )
             )
         return detections

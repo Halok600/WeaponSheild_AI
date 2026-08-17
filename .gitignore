@@ -20,11 +20,14 @@ val2017/
 *.log
 
 # Root-level model/ (weights dir) is ignored except the final deployed weights —
-# Render needs best.pt in the repo since it has no separate model-storage step.
+# Render needs the model file in the repo since it has no separate model-storage
+# step. best.pt is kept too (not just best.onnx) as the original PyTorch/
+# Ultralytics training artifact the ONNX export was produced from.
 # Anchored with a leading slash so this does NOT match backend/model/ (the
 # actual FastAPI detector Python package, which must stay tracked).
 /model/*
 !/model/best.pt
+!/model/best.onnx
 
 # Node
 node_modules/

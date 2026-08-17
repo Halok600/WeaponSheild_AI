@@ -1,10 +1,9 @@
 # Render Blueprint for the WeaponShield AI backend.
 # Deploy: https://dashboard.render.com/blueprints -> New Blueprint Instance -> pick this repo.
 #
-# NOTE: "free" plan gives 512MB RAM. YOLOv8 + torch (CPU inference, no GPU on
-# Render) is memory-hungry — if the service crashes on model load or OOMs during
-# inference, that's the free tier's RAM limit being hit; a paid plan with more
-# RAM would fix it, but this is deliberately left on "free" for now.
+# Runs on ONNX Runtime (not PyTorch/Ultralytics) specifically so it fits
+# comfortably in the "free" plan's 512MB RAM — full PyTorch OOM'd here under
+# real inference load even though it loaded fine at idle.
 services:
   - type: web
     name: weaponshield-backend
@@ -26,7 +25,7 @@ services:
       - key: ALERT_TO_EMAIL
         sync: false
       - key: MODEL_PATH
-        value: "../model/best.pt"
+        value: "../model/best.onnx"
       - key: WEAPON_CLASS_IDS
         value: "0,1,2"
       - key: CONFIDENCE_THRESHOLD

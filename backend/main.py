@@ -82,7 +82,7 @@ def health() -> dict:
     return {
         "status":         "ok",
         "model_loaded":   detector._loaded,
-        "model_path":     str(detector.model.ckpt_path) if detector._loaded else None,
+        "model_path":     detector.model_path if detector._loaded else None,
         "model_classes":  list(detector.class_names.values()) if detector._loaded else None,
         "resend_enabled": RESEND_ENABLED,
         "resend_from":    RESEND_FROM_EMAIL if RESEND_ENABLED else None,

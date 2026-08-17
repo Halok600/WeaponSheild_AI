@@ -23,16 +23,15 @@ RESEND_FROM_EMAIL: str = os.getenv("RESEND_FROM_EMAIL", "WeaponShield AI <onboar
 ALERT_TO_EMAILS: list[str] = [e.strip() for e in os.getenv("ALERT_TO_EMAIL", "").split(",") if e.strip()]
 RESEND_ENABLED: bool = bool(RESEND_API_KEY and ALERT_TO_EMAILS)
 
-# ── Model — fallback chain: best.pt → yolov8n.pt ─────────────────────────────
+# ── Model — ONNX Runtime, no PyTorch/Ultralytics in this deployment ──────────
 BASE_DIR: Path = Path(__file__).parent
 PROJECT_ROOT: Path = BASE_DIR.parent
 
 def _resolve_model_path() -> str:
     """
-    Resolve model weights with a priority fallback chain:
+    Resolve the ONNX model weights:
       1. Path from MODEL_PATH env var (if it exists on disk)
-      2. ../model/best.pt  (custom fine-tuned weights)
-      3. yolov8n.pt        (base model, auto-downloaded by ultralytics)
+      2. ../model/best.onnx  (custom fine-tuned weights, ONNX export)
     """
     env_path = os.getenv("MODEL_PATH", "").strip()
 
@@ -42,15 +41,17 @@ def _resolve_model_path() -> str:
         p = Path(env_path)
         candidates.append(p if p.is_absolute() else (PROJECT_ROOT / p).resolve())
 
-    # Always try fine-tuned best.pt as second option
-    candidates.append((PROJECT_ROOT / "model" / "best.pt").resolve())
+    candidates.append((PROJECT_ROOT / "model" / "best.onnx").resolve())
 
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
 
-    # Fallback: let ultralytics auto-download the nano base model
-    return "yolov8n.pt"
+    raise FileNotFoundError(
+        "No ONNX model found. Checked: "
+        + ", ".join(str(c) for c in candidates)
+        + ". Export one with: yolo export model=model/best.pt format=onnx"
+    )
 
 
 MODEL_PATH: str = _resolve_model_path()
