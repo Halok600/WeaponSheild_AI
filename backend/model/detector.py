@@ -1,21 +1,20 @@
 """
-detector.py – Singleton weapon detector running on ONNX Runtime.
+detector.py – Singleton weapon detector supporting two inference engines,
+              selected automatically from MODEL_PATH's file extension:
 
-Loads the model once at app startup and exposes:
-  • detect(frame)         → list of Detection dicts
-  • annotate(frame, dets) → annotated BGR frame
-  • draw_fps()            → overlay FPS counter
+  • .pt   → PyTorch/Ultralytics YOLO (full accuracy, needs a GPU/CPU with
+            plenty of RAM — used for local dev where there's no memory
+            constraint and a real GPU is available).
+  • .onnx → ONNX Runtime (much lighter footprint, no autograd/training
+            machinery — used for the deployed backend on Render's
+            constrained free tier, which OOMs under full PyTorch).
 
-Uses ONNX Runtime instead of full PyTorch/Ultralytics for inference — ONNX
-Runtime has no autograd/training machinery, so its memory footprint is far
-smaller, which matters on constrained hosts (e.g. Render's free tier, 512MB).
-Since ONNX Runtime doesn't provide YOLO's pre/post-processing convenience
-methods, letterbox resizing, box decoding, and NMS are implemented here
-manually.
+Both engines expose the same detect()/annotate()/draw_fps() interface so
+the rest of the app doesn't need to know which one is active.
 
 Model loading follows a priority fallback chain (configured in config.py):
-  1. MODEL_PATH env var (if file exists)
-  2. ../model/best.onnx   (custom fine-tuned weights, ONNX export)
+  1. MODEL_PATH env var (if it exists on disk)
+  2. ../model/best.onnx (default fallback)
 """
 from __future__ import annotations
 
@@ -27,7 +26,6 @@ from typing import ClassVar
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 
 from config import CONFIDENCE_THRESHOLD, MODEL_PATH, WEAPON_CLASS_IDS
 
@@ -82,14 +80,98 @@ class WeaponDetector:
 
     def load(self) -> None:
         """
-        Load the ONNX model following the fallback chain resolved by config.py.
+        Load the model, picking the engine from MODEL_PATH's extension.
         Called once during FastAPI startup via the lifespan context manager.
         """
         if self._loaded:
             return
 
-        logger.info("Loading ONNX model from: %s", MODEL_PATH)
+        self._engine = "pytorch" if MODEL_PATH.lower().endswith(".pt") else "onnx"
+        logger.info("Loading %s model from: %s", self._engine, MODEL_PATH)
         start = time.perf_counter()
+
+        if self._engine == "pytorch":
+            self._load_pytorch()
+        else:
+            self._load_onnx()
+
+        elapsed = time.perf_counter() - start
+        self.model_path = MODEL_PATH
+        self._loaded = True
+
+        logger.info(
+            "Model loaded in %.2fs via %s — %d classes. Weapon filter: %s.",
+            elapsed,
+            self._engine,
+            len(self.class_names),
+            WEAPON_CLASS_IDS if WEAPON_CLASS_IDS else "ALL (fine-tuned model)",
+        )
+
+    # ── PyTorch engine ───────────────────────────────────────────────────────
+    def _load_pytorch(self) -> None:
+        from ultralytics import YOLO
+
+        try:
+            import torch
+            gpu_available = torch.cuda.is_available()
+            logger.info(
+                "Compute device: %s",
+                torch.cuda.get_device_name(0) if gpu_available else "CPU",
+            )
+        except ImportError:
+            gpu_available = False
+
+        # PyTorch >=2.6 changed the default of torch.load to weights_only=True.
+        # YOLOv8 .pt checkpoints contain Python objects (DetectionModel etc.)
+        # and require weights_only=False. Since best.pt is our own trained
+        # model we trust it, so we patch torch.load temporarily.
+        import functools
+        import torch
+        _original_torch_load = torch.load
+
+        @functools.wraps(_original_torch_load)
+        def _patched_torch_load(f, *args, **kwargs):
+            kwargs.setdefault("weights_only", False)
+            return _original_torch_load(f, *args, **kwargs)
+
+        torch.load = _patched_torch_load
+        try:
+            self._yolo = YOLO(MODEL_PATH)
+        finally:
+            torch.load = _original_torch_load
+
+        self.class_names: dict[int, str] = self._yolo.names
+        self._gpu_available = gpu_available
+
+    def _detect_pytorch(self, frame: np.ndarray, threshold: float) -> list[Detection]:
+        results = self._yolo(frame, conf=threshold, verbose=False)[0]
+
+        detections: list[Detection] = []
+        for box in results.boxes:
+            cls_id = int(box.cls[0])
+            if WEAPON_CLASS_IDS and cls_id not in WEAPON_CLASS_IDS:
+                continue
+            box_conf = float(box.conf[0])
+
+            # Hard post-inference filter — custom weights can bypass the
+            # model-level conf parameter and return low-confidence boxes.
+            if box_conf < threshold:
+                continue
+
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+            detections.append(
+                Detection(
+                    label=self.class_names.get(cls_id, str(cls_id)),
+                    class_id=cls_id,
+                    confidence=box_conf,
+                    x1=x1, y1=y1, x2=x2, y2=y2,
+                )
+            )
+        return detections
+
+    # ── ONNX Runtime engine ──────────────────────────────────────────────────
+    def _load_onnx(self) -> None:
+        import onnxruntime as ort
 
         self._session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
         input_meta = self._session.get_inputs()[0]
@@ -103,18 +185,6 @@ class WeaponDetector:
         names_raw = meta.get("names", "{}")
         self.class_names: dict[int, str] = ast.literal_eval(names_raw)
 
-        elapsed = time.perf_counter() - start
-        self.model_path = MODEL_PATH
-        self._loaded = True
-
-        logger.info(
-            "Model loaded in %.2fs — %d classes. Weapon filter: %s.",
-            elapsed,
-            len(self.class_names),
-            WEAPON_CLASS_IDS if WEAPON_CLASS_IDS else "ALL (fine-tuned model)",
-        )
-
-    # ── Preprocessing ────────────────────────────────────────────────────────
     def _letterbox(self, frame: np.ndarray) -> tuple[np.ndarray, float, int, int]:
         """Resize+pad frame to a square input, preserving aspect ratio."""
         h0, w0 = frame.shape[:2]
@@ -134,24 +204,8 @@ class WeaponDetector:
         img = img.transpose(2, 0, 1)[None]  # (1, 3, size, size)
         return np.ascontiguousarray(img), scale, left, top
 
-    # ── Core inference ───────────────────────────────────────────────────────
-    def detect(self, frame: np.ndarray, conf: float | None = None) -> list[Detection]:
-        """
-        Run inference on a single BGR frame.
-        Returns list of Detection objects that pass confidence + class filters.
-
-        Args:
-            frame: BGR image as numpy array.
-            conf:  Optional confidence threshold override. Defaults to CONFIDENCE_THRESHOLD
-                   from config. Use a lower value (e.g. 0.35) for video frames which
-                   have compression artifacts and motion blur.
-        """
-        if not self._loaded:
-            raise RuntimeError("Detector not loaded. Call .load() first.")
-
-        threshold = conf if conf is not None else CONFIDENCE_THRESHOLD
+    def _detect_onnx(self, frame: np.ndarray, threshold: float) -> list[Detection]:
         h0, w0 = frame.shape[:2]
-
         input_tensor, scale, pad_x, pad_y = self._letterbox(frame)
         raw = self._session.run([self._output_name], {self._input_name: input_tensor})[0]
 
@@ -185,15 +239,10 @@ class WeaponDetector:
 
         detections: list[Detection] = []
         for i in indices:
-            # Undo letterbox padding/scaling to map back to original frame coords
-            ox1 = (x1[i] - pad_x) / scale
-            oy1 = (y1[i] - pad_y) / scale
-            ox2 = (x1[i] + bw[i] - pad_x) / scale
-            oy2 = (y1[i] + bh[i] - pad_y) / scale
-            ox1 = max(0, min(w0, ox1))
-            oy1 = max(0, min(h0, oy1))
-            ox2 = max(0, min(w0, ox2))
-            oy2 = max(0, min(h0, oy2))
+            ox1 = max(0, min(w0, (x1[i] - pad_x) / scale))
+            oy1 = max(0, min(h0, (y1[i] - pad_y) / scale))
+            ox2 = max(0, min(w0, (x1[i] + bw[i] - pad_x) / scale))
+            oy2 = max(0, min(h0, (y1[i] + bh[i] - pad_y) / scale))
 
             cls_id = int(class_ids[i])
             detections.append(
@@ -201,13 +250,30 @@ class WeaponDetector:
                     label=self.class_names.get(cls_id, str(cls_id)),
                     class_id=cls_id,
                     confidence=float(confidences[i]),
-                    x1=int(ox1),
-                    y1=int(oy1),
-                    x2=int(ox2),
-                    y2=int(oy2),
+                    x1=int(ox1), y1=int(oy1), x2=int(ox2), y2=int(oy2),
                 )
             )
         return detections
+
+    # ── Core inference ───────────────────────────────────────────────────────
+    def detect(self, frame: np.ndarray, conf: float | None = None) -> list[Detection]:
+        """
+        Run inference on a single BGR frame.
+        Returns list of Detection objects that pass confidence + class filters.
+
+        Args:
+            frame: BGR image as numpy array.
+            conf:  Optional confidence threshold override. Defaults to CONFIDENCE_THRESHOLD
+                   from config. Use a lower value (e.g. 0.35) for video frames which
+                   have compression artifacts and motion blur.
+        """
+        if not self._loaded:
+            raise RuntimeError("Detector not loaded. Call .load() first.")
+
+        threshold = conf if conf is not None else CONFIDENCE_THRESHOLD
+        if self._engine == "pytorch":
+            return self._detect_pytorch(frame, threshold)
+        return self._detect_onnx(frame, threshold)
 
     # ── Annotation ──────────────────────────────────────────────────────────
     def annotate(self, frame: np.ndarray, detections: list[Detection]) -> np.ndarray:

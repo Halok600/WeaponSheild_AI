@@ -23,23 +23,27 @@ RESEND_FROM_EMAIL: str = os.getenv("RESEND_FROM_EMAIL", "WeaponShield AI <onboar
 ALERT_TO_EMAILS: list[str] = [e.strip() for e in os.getenv("ALERT_TO_EMAIL", "").split(",") if e.strip()]
 RESEND_ENABLED: bool = bool(RESEND_API_KEY and ALERT_TO_EMAILS)
 
-# ── Model — ONNX Runtime, no PyTorch/Ultralytics in this deployment ──────────
+# ── Model — engine auto-selected by detector.py from the file extension ──────
+# .pt -> PyTorch/Ultralytics (local dev, has a GPU and no memory constraint)
+# .onnx -> ONNX Runtime (deployed backend, fits Render's constrained free tier)
 BASE_DIR: Path = Path(__file__).parent
 PROJECT_ROOT: Path = BASE_DIR.parent
 
 def _resolve_model_path() -> str:
     """
-    Resolve the ONNX model weights:
+    Resolve model weights:
       1. Path from MODEL_PATH env var (if it exists on disk)
-      2. ../model/best.onnx  (custom fine-tuned weights, ONNX export)
+      2. ../model/best.onnx  (default fallback)
     """
     env_path = os.getenv("MODEL_PATH", "").strip()
 
-    # Normalise relative paths relative to project root
+    # Relative paths (e.g. "../model/best.pt") are written as if standing in
+    # backend/ — resolve against BASE_DIR, not PROJECT_ROOT, or a leading ".."
+    # walks one directory too far up.
     candidates: list[Path] = []
     if env_path:
         p = Path(env_path)
-        candidates.append(p if p.is_absolute() else (PROJECT_ROOT / p).resolve())
+        candidates.append(p if p.is_absolute() else (BASE_DIR / p).resolve())
 
     candidates.append((PROJECT_ROOT / "model" / "best.onnx").resolve())
 
